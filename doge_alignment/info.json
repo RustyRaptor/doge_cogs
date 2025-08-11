@@ -1,0 +1,10 @@
+{
+    "author" : ["GodEmperorDoge", "Victor Angeles", "ur mom"],
+    "install_msg" : "YES FUCK YEAH WE INSTALLED THIS SHIT.",
+    "name" : "doge_alignment",
+    "short" : "Alignment chart manager",
+    "requirements" : ["playground @ git+https://github.com/RustyRaptor/doge_cogs.git"],
+    "description": "Alignment chart manager",
+    "permissions" : [],
+    "tags" : [""]
+}
