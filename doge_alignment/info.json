@@ -3,7 +3,7 @@
     "install_msg" : "YES FUCK YEAH WE INSTALLED THIS SHIT.",
     "name" : "doge_alignment",
     "short" : "Alignment chart manager",
-    "requirements" : ["doge_cogs @ git+https://github.com/RustyRaptor/doge_cogs.git#egg=doge_cogs"],
+    "requirements" : ["playground @ git+https://github.com/RustyRaptor/doge_cogs.git#egg=playground"],
     "description": "Alignment chart manager",
     "permissions" : [],
     "tags" : [""]
