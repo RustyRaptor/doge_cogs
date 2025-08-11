@@ -5,7 +5,7 @@ from pathlib import Path
 import discord
 from redbot.core import app_commands, commands
 
-from playground.alignment import (
+from doge_cogs.alignment import (
     load_yaml_file,
     parse_alignment_chart,
     remove_user_alignment,
