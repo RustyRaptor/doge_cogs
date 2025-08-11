@@ -1,4 +1,5 @@
 from redbot.core import app_commands, commands
+import discord
 
 
 class AlignmentCog(commands.Cog):
@@ -8,7 +9,6 @@ class AlignmentCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command()
-    async def alignment(self, ctx):
+    async def alignment(self, interaction: discord.Interaction):
         """This does stuff!"""
-        # Your code will go here
-        await ctx.send("I can do stuff!")
+        await interaction.response.send_message("Hello World!", ephemeral=True)
