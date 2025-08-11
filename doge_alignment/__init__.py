@@ -1,5 +1,5 @@
-from .doge_alignment import MyCog
+from .doge_alignment import AlignmentCog
 
 
 async def setup(bot):
-    await bot.add_cog(MyCog(bot))
+    await bot.add_cog(AlignmentCog(bot))
