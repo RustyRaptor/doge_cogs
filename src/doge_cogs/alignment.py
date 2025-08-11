@@ -25,25 +25,22 @@ class UserAlignment(TypedDict):
     alignment: AlignmentName
     display_name: str
     avatar_url: str | None
-
-
 class AlignmentChart(TypedDict):
-    """Whole server alignment chart."""
-
-    users: dict[str, UserAlignment]  # key: user_id as string
+    users: dict[str, UserAlignment]
+    admins: list[str]  # user IDs as strings
 
 
 def parse_alignment_chart(data: BytesIO) -> AlignmentChart:
-    """Parse YAML bytes into a Python dict."""
     data.seek(0)
     text = data.read().decode("utf-8") or ""
     loaded = yaml.safe_load(text)
     if not loaded:
-        return {"users": {}}
+        return {"users": {}, "admins": []}
     if "users" not in loaded:
         loaded["users"] = {}
+    if "admins" not in loaded:
+        loaded["admins"] = []
     return loaded  # type: ignore
-
 
 def serialize_alignment_chart(chart: AlignmentChart) -> BytesIO:
     """Convert Python dict into YAML BytesIO."""
