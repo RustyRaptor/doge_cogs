@@ -5,10 +5,10 @@ from pathlib import Path
 
 from doge_cogs.alignment import (
         AlignmentChart,
-        load_yaml_file,
+        load_file_buffer,
         parse_alignment_chart,
         remove_user_alignment,
-        save_yaml_file,
+        save_file_buffer,
         serialize_alignment_chart,
         set_user_alignment,
 )
@@ -68,11 +68,11 @@ class TestAlignmentChart(unittest.TestCase):
                         # Save initial
                         chart: AlignmentChart = {"users": {}, "admins": []}
                         buf = serialize_alignment_chart(chart)
-                        save_yaml_file(path, buf)
+                        save_file_buffer(path, buf)
                         self.assertTrue(path.exists())
 
                         # Load again
-                        loaded_buf = load_yaml_file(path)
+                        loaded_buf = load_file_buffer(path)
                         parsed = parse_alignment_chart(loaded_buf)
                         self.assertEqual(parsed, {"users": {}, "admins": []})
 
