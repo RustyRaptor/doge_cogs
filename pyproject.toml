@@ -11,6 +11,7 @@ dependencies = [
     "discord>=2.3.2",
     "pyyaml>=6.0.2",
     "red-discordbot>=3.5.20",
+    "wand>=0.6.13",
 ]
 
 
