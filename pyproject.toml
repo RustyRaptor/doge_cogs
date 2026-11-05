@@ -15,6 +15,29 @@ dependencies = [
 ]
 
 
+[dependency-groups]
+dev = [
+    "media-preload-client",
+    # Red's pytest plugin imports pip
+    "pip",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.17",
+    "ty>=0.0.97",
+]
+
+[tool.uv.sources]
+media-preload-client = { path = "clients/media-preload-client", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ty.src]
+# The watch cog and its tests; doge_alignment predates the type checking
+include = ["watch", "tests"]
+
 [build-system]
 requires = ["uv_build>=0.7.13,<0.8"]
 build-backend = "uv_build"
@@ -53,8 +76,8 @@ exclude = [
 line-length = 80
 indent-width = 8
 
-# Assume Python 3.13
-target-version = "py313"
+# Red 3.5 runs on Python 3.11
+target-version = "py311"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
@@ -109,6 +132,9 @@ unfixable = []
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.

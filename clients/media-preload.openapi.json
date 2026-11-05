@@ -1,0 +1,647 @@
+{
+  "components": {
+    "responses": {
+      "Problem": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "Error"
+      }
+    },
+    "schemas": {
+      "AgentJob": {
+        "properties": {
+          "fileId": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fileId",
+          "path",
+          "sizeBytes"
+        ],
+        "type": "object"
+      },
+      "ClaimRequest": {
+        "properties": {
+          "agentId": {
+            "example": "vps-dcruit2r",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId"
+        ],
+        "type": "object"
+      },
+      "CreateRequest": {
+        "properties": {
+          "episodes": {
+            "description": "Episode numbers within `season`",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "itemId": {
+            "description": "Jellyfin item id from /v1/search",
+            "type": "string"
+          },
+          "jellyfinUser": {
+            "description": "Jellyfin user name whose watch progress decides \"next\"",
+            "type": "string"
+          },
+          "next": {
+            "description": "Next N unwatched episodes for jellyfinUser",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 500,
+            "type": "string"
+          },
+          "requestedBy": {
+            "description": "Who asked",
+            "e.g. a Discord user name": null,
+            "maxLength": 100,
+            "type": "string"
+          },
+          "season": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "itemId",
+          "requestedBy"
+        ],
+        "type": "object"
+      },
+      "FileReport": {
+        "properties": {
+          "bytes": {
+            "description": "Bytes read from home for this file",
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "cached",
+              "already_cached",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "FileStatus": {
+        "enum": [
+          "queued",
+          "fetching",
+          "cached",
+          "failed",
+          "canceled",
+          "not_cacheable"
+        ],
+        "type": "string"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "example": "ok",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ],
+        "type": "object"
+      },
+      "MediaItem": {
+        "properties": {
+          "cacheable": {
+            "description": "False when the item lives outside the cached folders",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Jellyfin item id",
+            "type": "string"
+          },
+          "library": {
+            "description": "Jellyfin library path prefix, e.g. /media2/Videos/tvshows",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "seasonCount": {
+            "type": "integer"
+          },
+          "type": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "year": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "cacheable"
+        ],
+        "type": "object"
+      },
+      "MediaType": {
+        "enum": [
+          "movie",
+          "series"
+        ],
+        "type": "string"
+      },
+      "PreloadFile": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "fetchedBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path as seen by Jellyfin and webdav, e.g. /media2/Videos/tvshows/...",
+            "type": "string"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FileStatus"
+          },
+          "title": {
+            "description": "e.g. Dark Matter S02E08",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "title",
+          "status",
+          "sizeBytes"
+        ],
+        "type": "object"
+      },
+      "PreloadRequest": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/PreloadFile"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestStatus"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "itemId",
+          "title",
+          "requestedBy",
+          "status",
+          "createdAt",
+          "files"
+        ],
+        "type": "object"
+      },
+      "Problem": {
+        "properties": {
+          "error": {
+            "example": "series requests need jellyfinUser when using next",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "RequestStatus": {
+        "enum": [
+          "queued",
+          "fetching",
+          "done",
+          "partial",
+          "failed",
+          "canceled"
+        ],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Warm the VPS media cache (webdav.godemperordoge.org) before someone watches something.\n\nA client (for example the Discord bot) searches the Jellyfin library and files a request\n(\"I will watch Dark Matter season 2\"). The API resolves it to media files and queues them.\nThe preload agent on the VPS claims queued files and reads them through the local rclone\ncache, so they stream from the VPS instead of over the home uplink.\n\nOnly Movies (including Arabic Shows) and the two TV libraries are cacheable; other files are\nreported as `not_cacheable`.\n\nAuth: `Authorization: Bearer <token>`. Client tokens may use the search and request endpoints;\nagent tokens may only use `/v1/agent/*`.\n",
+    "title": "media-preload",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/agent/claim": {
+      "post": {
+        "operationId": "ClaimFile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentJob"
+                }
+              }
+            },
+            "description": "A file to fetch"
+          },
+          "204": {
+            "description": "Nothing queued"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Agent takes the next queued file",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/v1/agent/files/{fileId}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "fileId",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "type": "integer"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "ReportFile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Recorded"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Agent reports the result for a claimed file",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "operationId": "GetHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [],
+        "summary": "Liveness and version"
+      }
+    },
+    "/v1/requests": {
+      "get": {
+        "operationId": "ListRequests",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "$ref": "#/components/schemas/RequestStatus"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PreloadRequest"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Recent requests, newest first",
+        "tags": [
+          "requests"
+        ]
+      },
+      "post": {
+        "description": "For a movie, `season`, `episodes` and `next` are ignored.\nFor a series, give exactly one of:\n- `season` (whole season), optionally with `episodes` (those episode numbers of that season);\n- `next` (the next N unwatched episodes for `jellyfinUser`).\nWith none of them, a series defaults to `next: 3` and then needs `jellyfinUser`.\n",
+        "operationId": "CreateRequest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreloadRequest"
+                }
+              }
+            },
+            "description": "Queued (files already cached are marked `cached` right away by the agent)"
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Ask for a movie or episodes to be cached",
+        "tags": [
+          "requests"
+        ]
+      }
+    },
+    "/v1/requests/{id}": {
+      "delete": {
+        "operationId": "CancelRequest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreloadRequest"
+                }
+              }
+            },
+            "description": "Canceled (files already fetched stay cached)"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Cancel the files of a request that are still queued",
+        "tags": [
+          "requests"
+        ]
+      },
+      "get": {
+        "operationId": "GetRequest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreloadRequest"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "One request with per-file progress",
+        "tags": [
+          "requests"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "type": "integer"
+          }
+        }
+      ]
+    },
+    "/v1/search": {
+      "get": {
+        "operationId": "SearchLibrary",
+        "parameters": [
+          {
+            "description": "Title to search for",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "minLength": 2,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "schema": {
+              "$ref": "#/components/schemas/MediaType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 10,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MediaItem"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Matches, best first"
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "summary": "Search movies and series in Jellyfin",
+        "tags": [
+          "library"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "on yveltal",
+      "url": "http://127.0.0.1:8125"
+    },
+    {
+      "description": "from the VPS, over the wg-home tunnel",
+      "url": "http://10.77.0.2:8125"
+    }
+  ],
+  "tags": [
+    {
+      "name": "library"
+    },
+    {
+      "name": "requests"
+    },
+    {
+      "name": "agent"
+    }
+  ]
+}

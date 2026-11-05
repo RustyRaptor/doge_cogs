@@ -1,0 +1,15 @@
+{
+    "author": ["GodEmperorDoge"],
+    "name": "Watch",
+    "short": "Preload a movie or episodes so they stream fast.",
+    "description": "Ask the home lab's media-preload service to cache a movie, a season, some episodes, or your next unwatched episodes, and follow the download in the channel.",
+    "install_msg": "Set the API token with the PRELOAD_BOT_TOKEN environment variable or `[p]set api media_preload token,<token>` (and url,<url> if it isn't http://host.containers.internal:8125).",
+    "end_user_data_statement": "This cog stores the Jellyfin user name you link with `watch link`, to find your next unwatched episodes. `watch unlink` deletes it.",
+    "requirements": [
+        "media-preload-client @ git+https://github.com/RustyRaptor/doge_cogs.git#subdirectory=clients/media-preload-client"
+    ],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 11, 0],
+    "tags": ["media", "jellyfin", "webdav"],
+    "type": "COG"
+}

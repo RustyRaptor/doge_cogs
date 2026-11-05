@@ -1,0 +1,32 @@
+# Dev tools and tasks. Python and its dependencies are managed by uv.
+# Lint and type checks cover the watch cog; doge_alignment predates them.
+[tools]
+uv = "0.13"
+
+[tasks.sync]
+run = "uv sync"
+
+[tasks.fmt]
+run = ["uv run ruff format watch tests", "uv run ruff check --fix watch tests"]
+
+[tasks.lint]
+run = ["uv run ruff format --check watch tests", "uv run ruff check watch tests"]
+
+[tasks.typecheck]
+run = "uv run ty check"
+
+[tasks.test]
+run = "uv run pytest"
+
+[tasks.check]
+depends = ["lint", "typecheck", "test"]
+
+[tasks.generate-client]
+description = "Regenerate clients/media-preload-client from the live media-preload spec"
+run = """
+curl -fsS http://10.0.0.38:8125/openapi.json | jq . > clients/media-preload.openapi.json
+uvx --from openapi-python-client==0.29.1 --with ruff openapi-python-client generate \
+  --path clients/media-preload.openapi.json --config clients/openapi-python-client.yaml \
+  --meta uv --output-path clients/media-preload-client --overwrite
+rm -rf clients/media-preload-client/.ruff_cache
+"""

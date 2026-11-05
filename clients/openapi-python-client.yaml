@@ -1,0 +1,6 @@
+# Settings for generating clients/media-preload-client (see README)
+project_name_override: media-preload-client
+package_name_override: media_preload_client
+post_hooks:
+  - "ruff check . --fix-only --select I,F401 --quiet"
+  - "ruff format . --quiet"
