@@ -194,3 +194,9 @@ def test_model_config_from_env_then_tokens() -> None:
         from_env = model_config(env, tokens)
         assert from_env is not None
         assert (from_env.base_url, from_env.model) == ("http://e", "tm")
+        assert from_env.extra == {}
+        thinking_off = model_config(
+                {**env, "ALIGNMENT_MODEL_REASONING": "none"}, {}
+        )
+        assert thinking_off is not None
+        assert thinking_off.extra == {"reasoning_effort": "none"}

@@ -179,18 +179,24 @@ def model_config(
 ) -> ModelConfig | None:
         """Return the guessing model's settings, or None if unset.
 
-        From ``ALIGNMENT_MODEL_URL``/``_NAME``/``_KEY``, else Red's shared API
-        tokens ``alignment_model`` (``url``, ``model``, ``key``).
+        From ``ALIGNMENT_MODEL_URL``/``_NAME``/``_KEY``/``_REASONING``, else
+        Red's shared API tokens ``alignment_model`` (``url``, ``model``,
+        ``key``, ``reasoning``).
         """
         url = env.get("ALIGNMENT_MODEL_URL") or tokens.get("url")
         if not url:
                 return None
+        reasoning = env.get("ALIGNMENT_MODEL_REASONING") or tokens.get(
+                "reasoning"
+        )
         return ModelConfig(
                 base_url=url,
                 model=env.get("ALIGNMENT_MODEL_NAME")
                 or tokens.get("model")
                 or "default",
                 api_key=env.get("ALIGNMENT_MODEL_KEY") or tokens.get("key"),
+                # "none" turns thinking off on reasoning models (Ollama)
+                extra={"reasoning_effort": reasoning} if reasoning else {},
         )
 
 
