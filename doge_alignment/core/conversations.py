@@ -14,7 +14,7 @@ channel separation, reply links and time gaps get most of the way.
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from urllib.parse import urlsplit
 
 from .messages import Message, by_time
@@ -194,8 +194,11 @@ def render_segment(
         target_id: str,
         target_name: str,
         hidden_authors: frozenset[str] = frozenset(),
+        tz: tzinfo = UTC,
 ) -> str:
         """Return a transcript: a date and channel line, then the turns.
+
+        The date is local to ``tz``, with its abbreviation (MST, MDT, ...).
 
         Other people are anonymised as letters; anyone in
         ``hidden_authors`` has their words replaced by :data:`HIDDEN`.
@@ -204,7 +207,8 @@ def render_segment(
                 return ""
         first = segment[0].messages[0]
         labels = speaker_labels(segment, target_id, target_name)
-        header = f"[{first.created:%Y-%m-%d %H:%M} UTC, #{first.channel_name}]"
+        local = first.created.astimezone(tz)
+        header = f"[{local:%Y-%m-%d %H:%M %Z}, #{first.channel_name}]"
         lines = [
                 f"{labels[t.author_id]}: "
                 + (

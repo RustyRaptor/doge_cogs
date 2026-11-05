@@ -7,7 +7,8 @@ the history down at that point, so two pages give the posting rate between
 them, and all pages together sketch how it changed over the years, without
 fetching anything else.
 
-Hours are UTC, since the bot doesn't know anyone's time zone.
+Hours and weekdays are in the time zone the front end passes (for now one
+for everyone; per-person zones can come from a timezone cog later).
 """
 
 import math
@@ -16,7 +17,7 @@ import statistics
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, tzinfo
 
 from .messages import Message, by_time
 
@@ -56,6 +57,7 @@ class Activity:
         median_burst: float
         average_length: float
         shares: dict[str, float]
+        zone: str = "UTC"
 
 
 def rates_between(anchors: Sequence[Anchor]) -> tuple[Rate, ...]:
@@ -132,6 +134,17 @@ def _share(
         return sum(1 for m in messages if test(m)) / len(messages)
 
 
+def _fraction(
+        times: Sequence[datetime], test: Callable[[datetime], bool]
+) -> float:
+        return sum(1 for t in times if test(t)) / len(times) if times else 0.0
+
+
+def zone_name(tz: tzinfo) -> str:
+        """Name a time zone: its IANA key (America/Denver) or its name."""
+        return str(getattr(tz, "key", None) or tz.tzname(None) or "UTC")
+
+
 def _shouty(text: str) -> bool:
         letters = LETTERS.findall(text)
         return (
@@ -160,9 +173,14 @@ def activity(
         anchors: Sequence[Anchor],
         total: int,
         joined: date | None = None,
+        tz: tzinfo = UTC,
 ) -> Activity:
-        """Summarise ``own`` messages (the sampled pages) and the anchors."""
-        hours = Counter(m.created.hour for m in own)
+        """Summarise ``own`` messages (the sampled pages) and the anchors.
+
+        Hours, nights and weekends are counted in ``tz``.
+        """
+        local = [m.created.astimezone(tz) for m in own]
+        hours = Counter(t.hour for t in local)
         gaps = gaps_seconds(own)
         lengths = [len(m.content) for m in own if m.content]
         return Activity(
@@ -170,12 +188,13 @@ def activity(
                 joined=joined,
                 rates=rates_between(anchors),
                 hours=tuple(hours.get(h, 0) for h in range(24)),
-                weekend_share=_share(own, lambda m: m.created.weekday() >= 5),  # noqa: PLR2004
-                night_share=_share(own, lambda m: m.created.hour < 6),  # noqa: PLR2004
+                weekend_share=_fraction(local, lambda t: t.weekday() >= 5),  # noqa: PLR2004
+                night_share=_fraction(local, lambda t: t.hour < 6),  # noqa: PLR2004
                 burstiness=burstiness(gaps),
                 median_burst=median_burst(gaps) if own else 0,
                 average_length=statistics.fmean(lengths) if lengths else 0.0,
                 shares=style_shares(own),
+                zone=zone_name(tz),
         )
 
 
@@ -228,11 +247,11 @@ def describe(a: Activity) -> str:
                 ),
                 *(rate_lines or ["  not enough samples"]),
                 (
-                        f"Busiest hours (UTC): {_busiest_hours(a.hours)}; "
+                        f"Busiest hours ({a.zone}): {_busiest_hours(a.hours)}; "
                         f"{_hour_spread(a.hours)}"
                 ),
                 (
-                        f"Late night (00-06 UTC): {a.night_share:.0%}; "
+                        f"Late night (00-06 {a.zone}): {a.night_share:.0%}; "
                         f"weekends: {a.weekend_share:.0%}"
                 ),
                 (

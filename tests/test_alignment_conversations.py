@@ -99,3 +99,16 @@ def test_tidy() -> None:
         )
         assert tidy("<@!5>", {"5": "A"}) == "@A"
         assert tidy("http://x") == "<link: x>"
+
+
+def test_transcript_header_in_local_time() -> None:
+        """Headers show local time with MST or MDT."""
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+        denver = ZoneInfo("America/Denver")
+        winter = segments(merge_bursts([msg(1, "55")]))[0]
+        assert render_segment(winter, "55", "Doge", tz=denver).startswith(
+                "[2024-01-01 05:00 MST, #chan-c1]"
+        )
+        summer = segments(merge_bursts([msg(1, "55", 60 * 24 * 182)]))[0]
+        assert "06:00 MDT" in render_segment(summer, "55", "Doge", tz=denver)

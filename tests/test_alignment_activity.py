@@ -76,3 +76,21 @@ def test_night_and_weekend_shares() -> None:
         a = activity([msg(1, minutes=offset), msg(2)], [], total=2)
         assert a.night_share == 0.5  # noqa: PLR2004
         assert a.weekend_share == 0.5  # noqa: PLR2004
+
+
+def test_hours_nights_and_weekends_in_mountain_time() -> None:
+        """Times are counted in the given zone, daylight saving included."""
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+        denver = ZoneInfo("America/Denver")
+        # 2024-01-06 09:00 UTC is Saturday 02:00 MST: night and weekend
+        saturday_2am = datetime(2024, 1, 6, 9, 0, tzinfo=UTC)
+        offset = (saturday_2am - START).total_seconds() / 60
+        a = activity([msg(1, minutes=offset)], [], total=1, tz=denver)
+        assert a.hours[2] == 1
+        assert (a.night_share, a.weekend_share) == (1, 1)
+        assert a.zone == "America/Denver"
+        assert "Busiest hours (America/Denver): 02:00" in describe(a)
+        # The same UTC instant counted in UTC is 09:00, not night
+        utc = activity([msg(1, minutes=offset)], [], total=1)
+        assert (utc.hours[9], utc.night_share) == (1, 0)

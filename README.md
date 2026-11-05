@@ -51,7 +51,7 @@ How a guess works (`core/sampling.py`, `gather.py`, `core/conversations.py`, `co
    replies stay with what they answer. Others are anonymised as A, B, …, and anyone who blocked guesses is shown
    as hidden. Bots are left out.
 3. An activity profile: posting rate between the sampled pages over the years and how steady it is, busiest
-   UTC hours, late-night and weekend shares, burstiness, typical run length, message length, and style (links,
+   hours, late-night and weekend shares, burstiness, typical run length, message length, and style (links,
    caps, emoji, questions, replies…).
 4. The profile picture: its main colours (ImageMagick) and a short description from the model's vision.
 5. Conversations are packed into the budget round-robin across pages (so the whole history is covered) and
@@ -60,6 +60,10 @@ How a guess works (`core/sampling.py`, `gather.py`, `core/conversations.py`, `co
 
 The system prompt asks for a fair, candid judgement: patterns over single jokes, no default cell, activity and
 avatar as hints only, nothing about protected traits, and a reason that's a friendly roast in good taste.
+Times (busiest hours, late night, weekends, transcript headers) are in Mountain Time (`America/Denver`, MST/MDT)
+for everyone for now; `ALIGNMENT_TIMEZONE` or the `timezone` key of the `alignment_model` API tokens changes it.
+Per-person zones from the timezone cog are on the TODO list.
+
 `ALIGNMENT_CONTEXT_TOKENS` (default 32,000; Qwen3.5-9B allows 131,072 on yveltal) sets the budget. On yveltal's
 GTX 1080 + 1060 the model reads about 400-600 tokens/s, so a 32k guess takes around 1.5-2 minutes in all; the
 message shows progress meanwhile.

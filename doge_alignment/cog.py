@@ -14,7 +14,9 @@ import os
 import re
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from datetime import UTC, tzinfo
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 import discord
@@ -176,6 +178,25 @@ def spec_summary(spec: ChartSpec) -> str:
                 f"**{spec.title}**\nColumns: {', '.join(spec.columns)}\n"
                 f"Rows: {', '.join(spec.rows)}\n```\n{grid}\n```"
         )
+
+
+# Until per-person zones come from the timezone cog, everyone is assumed to
+# be here (ALIGNMENT_TIMEZONE overrides)
+DEFAULT_TIMEZONE = "America/Denver"
+
+
+def guess_timezone(env: Mapping[str, str], tokens: Mapping[str, str]) -> tzinfo:
+        """Return the time zone guesses use; UTC if the name is unknown.
+
+        From ``ALIGNMENT_TIMEZONE``, else the ``alignment_model`` API
+        token ``timezone``, else Mountain Time.
+        """
+        name = env.get("ALIGNMENT_TIMEZONE") or tokens.get("timezone")
+        try:
+                return ZoneInfo(name or DEFAULT_TIMEZONE)
+        except (ZoneInfoNotFoundError, ValueError):
+                log.warning("Unknown time zone %r; using UTC", name)
+                return UTC
 
 
 def model_config(
@@ -970,6 +991,12 @@ class AlignmentCog(commands.Cog):
                         avatar=avatar,
                         palette=palette,
                         hidden=await self._blocked_users(),
+                        tz=guess_timezone(
+                                os.environ,
+                                await self.bot.get_shared_api_tokens(
+                                        "alignment_model"
+                                ),
+                        ),
                 )
                 prompt = build_prompt(
                         dossier, chart.spec, config.context_tokens

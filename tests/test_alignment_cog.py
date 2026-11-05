@@ -204,3 +204,19 @@ def test_model_config_from_env_then_tokens() -> None:
         )
         assert thinking_off is not None
         assert thinking_off.extra == {"reasoning_effort": "none"}
+
+
+def test_guess_timezone() -> None:
+        """Mountain Time unless set; unknown names fall back to UTC."""
+        from datetime import UTC  # noqa: PLC0415
+
+        from doge_alignment.cog import guess_timezone  # noqa: PLC0415
+
+        assert str(guess_timezone({}, {})) == "America/Denver"
+        assert str(guess_timezone({}, {"timezone": "Europe/Paris"})) == (
+                "Europe/Paris"
+        )
+        assert str(
+                guess_timezone({"ALIGNMENT_TIMEZONE": "Asia/Tokyo"}, {})
+        ) == ("Asia/Tokyo")
+        assert guess_timezone({"ALIGNMENT_TIMEZONE": "Mars/Base"}, {}) is UTC

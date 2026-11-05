@@ -11,8 +11,8 @@
 
 4. Guess sampling: cache the dossier per person for an hour so repeat guesses are instant, and include
    thread messages (search filtered by parent channel ids leaves them out).
-5. Know people's time zones (aikaterna's timezone cog stores them) so the activity profile can say "posts at
-   3am" instead of in UTC.
+5. Per-person time zones from aikaterna's timezone cog (it stores each user's zone). For now everyone is
+   assumed to be in Mountain Time (`ALIGNMENT_TIMEZONE`, default `America/Denver`).
 
 ## Done on 2026-11-05 (second round)
 

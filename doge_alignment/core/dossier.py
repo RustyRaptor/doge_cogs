@@ -8,7 +8,7 @@ conversation, grouped by page so packing can spread over the history.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, tzinfo
 
 from .activity import Anchor, activity, describe
 from .conversations import conversations_with, render_segment
@@ -36,6 +36,7 @@ def evidence(
         target_id: str,
         target_name: str,
         hidden: frozenset[str] = frozenset(),
+        tz: tzinfo = UTC,
 ) -> tuple[Evidence, ...]:
         """Return one evidence item per conversation the target was in.
 
@@ -46,7 +47,9 @@ def evidence(
         return tuple(
                 Evidence(
                         segment[0].start,
-                        render_segment(segment, target_id, target_name, hidden),
+                        render_segment(
+                                segment, target_id, target_name, hidden, tz
+                        ),
                         group,
                 )
                 for group, page in enumerate(pages)
@@ -68,13 +71,19 @@ def build_dossier(  # noqa: PLR0913 (it gathers everything)
         avatar: str = "",
         palette: str = "",
         hidden: frozenset[str] = frozenset(),
+        tz: tzinfo = UTC,
 ) -> Dossier:
-        """Return the dossier for ``name`` from the fetched pages."""
+        """Return the dossier for ``name`` from the fetched pages.
+
+        Times in the activity profile and transcripts are local to ``tz``.
+        """
         own = [m for page in pages for m in page.items]
         return Dossier(
                 name=name,
-                activity=describe(activity(own, anchors(pages), total, joined)),
+                activity=describe(
+                        activity(own, anchors(pages), total, joined, tz)
+                ),
                 avatar=avatar,
                 palette=palette,
-                evidence=evidence(pages, contexts, target_id, name, hidden),
+                evidence=evidence(pages, contexts, target_id, name, hidden, tz),
         )
