@@ -136,7 +136,8 @@ unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+# Seeded random.Random makes sampling tests reproducible
+"tests/**" = ["S101", "S311"]
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.

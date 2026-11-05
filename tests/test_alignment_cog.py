@@ -200,3 +200,26 @@ def test_model_config_from_env_then_tokens() -> None:
         )
         assert thinking_off is not None
         assert thinking_off.extra == {"reasoning_effort": "none"}
+
+
+def test_search_body_parsing() -> None:
+        """Hit groups' first message is the match; junk is skipped."""
+        from doge_alignment.cog import (  # noqa: PLC0415
+                found_from_search,
+                total_from_search,
+        )
+        from doge_alignment.core.sampling import Found  # noqa: PLC0415
+
+        body = {
+                "total_results": 4826,
+                "messages": [
+                        [{"id": "1", "content": "hi"}],
+                        [{"id": "2", "content": None}],
+                        [],
+                        "junk",
+                ],
+        }
+        assert found_from_search(body) == (Found("1", "hi"), Found("2", ""))
+        assert total_from_search(body) == 4826
+        assert total_from_search({"code": 110000}) == 0
+        assert found_from_search({}) == ()

@@ -9,11 +9,16 @@
    Red image (fonts-noto-cjk is large).
 3. Measure Pango text instead of estimating its width, so names are cut only when they really don't fit.
 
+4. Guess sampling: cache the sampled pool per person for an hour so repeat guesses are instant, and include
+   thread messages (search filtered by parent channel ids leaves them out).
+
 ## Done on 2026-11-05 (second round)
 
 - `alignment suggest`, `suggestions`, `accept`, `reject`, with Accept/Reject buttons that survive restarts.
 - Custom charts: `alignment chart title|columns|rows|label|color|reset`, in pictures, text, parsing,
   autocomplete, YAML export/import.
+- `alignment guess` samples 35 messages from the whole history (Discord's guild search, random pages, past
+  the 10,000 offset limit) instead of the last 35.
 - `alignment guess` with a local model (constrained to the chart's labels, becomes a suggestion) and
   `alignment guessing` to opt out.
 - Emoji and other scripts in names, through ImageMagick's Pango coder, with escaping for untrusted text.

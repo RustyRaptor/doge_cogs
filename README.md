@@ -20,7 +20,7 @@ A 3x3 D&D alignment chart per server, drawn with members' avatars cut into circl
 | `alignment set <cell> [member]` | put yourself on the chart, or someone who isn't on it yet; admins can move anyone. Takes the server's labels, `CG`, `neutral`, … |
 | `alignment suggest <member> <cell>` | suggest where someone belongs; they get Accept/Reject buttons (they still work after a restart) |
 | `alignment suggestions [member]`, `accept <who>`, `reject <who>` | list and answer suggestions by command (`who` is a mention or `guess`) |
-| `alignment guess [member]` | a local language model reads up to 35 recent messages (in channels you can both see) and suggests a cell |
+| `alignment guess [member]` | a local language model reads 35 messages picked at random from the person's whole history (in channels you can both see) and suggests a cell; takes about 40 seconds |
 | `alignment guessing <true\|false>` | allow or block guesses from your messages |
 | `alignment remove [user]` | take yourself off; admins can take anyone off |
 | `alignment prune` | admins: take off everyone who has left the server (until then they show greyed out) |
@@ -39,6 +39,12 @@ Pictures need ImageMagick (`libmagickwand`) on the bot's host; without it, `alig
 ImageMagick's Pango coder (Debian: `libmagickcore-6.q16-6-extra`) text falls back per glyph to other fonts, so
 names with emoji (with `fonts-noto-color-emoji`) and other scripts render. All text going to Pango is escaped
 for both Pango markup and ImageMagick's own `%`/`\`/`@` escapes, since names are untrusted.
+
+Messages for guesses come from Discord's guild message search, which reaches the whole history: the cog
+reads 8 random pages of the person's messages (past the search's 10,000-result offset limit too) and keeps 5
+random messages with text from each, then picks 35. Search allows only about one request per 5 seconds, so
+this takes about 40 seconds; reading single random messages instead took over two minutes. Thread messages
+aren't included. Without search access the cog falls back to scanning recent channel history.
 
 Guessing needs an OpenAI-compatible chat server (llama.cpp, Ollama, vLLM): `ALIGNMENT_MODEL_URL` (and
 `ALIGNMENT_MODEL_NAME`, `ALIGNMENT_MODEL_KEY`) in the bot's environment, or `[p]set api alignment_model

@@ -60,10 +60,7 @@ def clean_messages(
         limit: int = MAX_MESSAGES,
         max_chars: int = MAX_MESSAGE_CHARS,
 ) -> tuple[str, ...]:
-        """Return the newest ``limit`` non-empty messages, each shortened.
-
-        ``messages`` are newest first, as Discord returns history.
-        """
+        """Return the first ``limit`` non-empty messages, each shortened."""
         cleaned = (" ".join(m.split()) for m in messages)
         return tuple(m[:max_chars] for m in cleaned if m)[:limit]
 
@@ -112,8 +109,8 @@ def build_prompt(
                 {
                         "role": "user",
                         "content": (
-                                f"Recent messages from {json.dumps(name)}, "
-                                f"newest first:\n{quoted}"
+                                f"Messages from {json.dumps(name)}, picked at "
+                                f"random from their history:\n{quoted}"
                         ),
                 },
         ]
