@@ -16,11 +16,16 @@ from pathlib import Path
 
 from wand.color import Color
 from wand.drawing import Drawing
-from wand.image import Image
+from wand.image import COMPOSITE_OPERATORS, Image
 
 from .images import sniff
 from .layout import Box, CellPlan, Plan, Slot, Theme, plan_chart, plan_tile
 from .view import Cell
+
+# ImageMagick 7 calls it copy_alpha, 6 (Debian 12's) copy_opacity
+COPY_ALPHA = (
+        "copy_alpha" if "copy_alpha" in COMPOSITE_OPERATORS else "copy_opacity"
+)
 
 _FONT_CANDIDATES = (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -122,9 +127,7 @@ def avatar_disc(
                         face.modulate(brightness=60, saturation=0)
                 face.alpha_channel = "activate"
                 with _disc_mask(inner) as mask:
-                        face.composite_channel(
-                                "alpha", mask, "copy_alpha", 0, 0
-                        )
+                        face.composite_channel("alpha", mask, COPY_ALPHA, 0, 0)
                 disc = Image(
                         width=size, height=size, background=Color("transparent")
                 )
