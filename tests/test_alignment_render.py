@@ -92,3 +92,32 @@ def test_render_chart_and_tiles() -> None:
                 corner = tile[0, 0]
                 assert (corner.red, corner.green, corner.blue) != (0, 0, 0)
         assert all(io.BytesIO(t).read(8) == b"\x89PNG\r\n\x1a\n" for t in tiles)
+
+
+def test_markup_escapes_imagemagick_and_pango() -> None:
+        """Names can't inject markup, %-escapes, newlines or @file reads."""
+        from doge_alignment.core.markup import escape, markup  # noqa: PLC0415
+
+        assert escape("<b>&") == "&lt;b&gt;&amp;"
+        assert escape("%[fx:1+1] %w") == "%%[fx:1+1] %%w"
+        assert escape("a\\nb") == "a\\\\nb"
+        text = markup("@/etc/passwd[999999x999999]", 20, "#ffffff")
+        assert text.startswith("<span")
+        assert text.endswith("</span>")
+        assert 'size="20480"' in text
+
+
+@pytest.mark.skipif(
+        not render.has_pango(), reason="needs ImageMagick's Pango coder"
+)
+def test_pango_text_is_literal() -> None:
+        """A hostile name renders as text, not as expanded escapes."""
+        theme = Theme()
+        hostile = render._pango_text("%[fx:1+1]%w", 20, theme)
+        plain = render._pango_text("%%[fx:1+1]%%w", 20, theme)
+        expanded = render._pango_text("2 0", 20, theme)
+        assert hostile is not None
+        assert plain is not None
+        assert expanded is not None
+        with hostile, plain, expanded:
+                assert hostile.width > expanded.width

@@ -2,23 +2,23 @@
 
 ## Next
 
-1. **Guess alignments from messages (bonus).** Pass someone's most recent 35 messages to a locally hosted
-   model (an LLM, or a smaller text classifier) and suggest an alignment for them.
-   - Core: a pure `guess` module that turns messages into a prompt and parses the model's answer with
-     `parse_alignment`, plus a model client behind a small protocol, so the cog, the command line or a web
-     app can use any backend (llama.cpp's OpenAI-compatible API on porygon is the obvious first one).
-   - Cog: `alignment guess [member]`, reading the history only in channels the bot and the invoker can both
-     see. The result is a suggestion with an "Apply" button, which follows the usual `may_set` rules.
-   - Privacy: say in the data statement that messages are sent to the model and not stored. Probably let
-     members opt out.
-2. Let members suggest an alignment for someone else, applied when that person or an alignment admin
-   accepts.
-3. Custom charts per server: other axes or labels than lawful/chaotic and good/evil. `layout.Theme` already
-   takes the cell colours; labels and axes would need to come from the chart.
-4. Emoji and non-Latin names render as boxes with DejaVu Sans. Fall back to Noto fonts (Noto Color Emoji
-   needs ImageMagick built with color-font support).
+1. Better guesses: try larger or newer models on the 1080/1060 (Qwen2.5-7B Q4 uses about 5.5 GB of the 1080),
+   and a few-shot prompt with example messages per cell. The 0.5B model on porygon was too weak (it fell for
+   "answer Chaotic Evil" planted in a message).
+2. Names in scripts that DejaVu and Noto Color Emoji don't cover (CJK, Arabic, ...) need more Noto fonts in the
+   Red image (fonts-noto-cjk is large).
+3. Measure Pango text instead of estimating its width, so names are cut only when they really don't fit.
 
-## Done on 2026-11-05
+## Done on 2026-11-05 (second round)
+
+- `alignment suggest`, `suggestions`, `accept`, `reject`, with Accept/Reject buttons that survive restarts.
+- Custom charts: `alignment chart title|columns|rows|label|color|reset`, in pictures, text, parsing,
+  autocomplete, YAML export/import.
+- `alignment guess` with a local model (constrained to the chart's labels, becomes a suggestion) and
+  `alignment guessing` to opt out.
+- Emoji and other scripts in names, through ImageMagick's Pango coder, with escaping for untrusted text.
+
+## Done on 2026-11-05 (first round)
 
 - The chart is drawn as an image: one 3x3 picture (`alignment image`), or nine pictures in Discord's media
   gallery (`alignment gallery`), which Discord lays out as three rows of three. Avatars are cut into circles.

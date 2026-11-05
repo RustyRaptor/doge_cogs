@@ -11,16 +11,18 @@ from doge_alignment.core.chart import (
         clear,
         empty_chart,
         forget_user,
+        import_chart,
         make_chart,
         may_manage,
         may_remove,
         may_set,
         place,
         remove_admin,
-        replace_users,
         unplace,
         unplace_all,
+        with_spec,
 )
+from doge_alignment.core.spec import ChartSpec, with_title
 
 
 def test_place_returns_new_chart_and_keeps_admins() -> None:
@@ -82,13 +84,16 @@ def test_forget_user_removes_every_trace() -> None:
         assert after.admins == ()
 
 
-def test_replace_users_keeps_own_admins() -> None:
-        """Importing a chart brings its people, not its admins."""
+def test_import_keeps_own_admins_and_takes_custom_labels() -> None:
+        """Importing brings people and custom labels, not admins."""
         ours = chart_with(("1", "Lawful Good"), admins=("a",))
         theirs = chart_with(("2", "Chaotic Good"), admins=("b",))
-        merged = replace_users(ours, theirs)
+        merged = import_chart(ours, theirs)
         assert set(merged.users) == {"2"}
         assert merged.admins == ("a",)
+        assert merged.spec == ours.spec
+        custom = with_spec(theirs, with_title(ChartSpec(), "Pizza"))
+        assert import_chart(ours, custom).spec.title == "Pizza"
 
 
 def test_may_set_rules() -> None:

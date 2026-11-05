@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .alignments import ALIGNMENTS, AlignmentName, abbreviation
 from .chart import Chart, Entry
+from .spec import label
 
 
 @dataclass(frozen=True)
@@ -31,10 +32,21 @@ class Person:
 
 @dataclass(frozen=True)
 class Cell:
-        """One square of the chart and the people in it, sorted by name."""
+        """One square of the chart and the people in it, sorted by name.
+
+        ``label`` is what the chart calls the square; ``color`` overrides the
+        theme's colour for it.
+        """
 
         alignment: AlignmentName
         people: tuple[Person, ...] = ()
+        label: str = ""
+        color: str | None = None
+
+        @property
+        def title(self) -> str:
+                """The label, or the classic name if there is none."""
+                return self.label or self.alignment
 
 
 def person(user_id: str, entry: Entry, lookup: Lookup | None) -> Person:
@@ -82,7 +94,12 @@ def cells(chart: Chart, lookup: Lookup | None = None) -> tuple[Cell, ...]:
                 for uid, entry in chart.users.items()
         )
         return tuple(
-                Cell(alignment, _sorted_in(people, alignment))
+                Cell(
+                        alignment,
+                        _sorted_in(people, alignment),
+                        label(chart.spec, alignment),
+                        chart.spec.colors.get(alignment),
+                )
                 for alignment in ALIGNMENTS
         )
 
@@ -104,7 +121,7 @@ def _label(p: Person) -> str:
 def format_text(chart_cells: tuple[Cell, ...]) -> str:
         """Return the chart as Markdown lines, leaving out empty cells."""
         return "\n".join(
-                f"**{cell.alignment}**: "
+                f"**{cell.title}**: "
                 + ", ".join(_label(p) for p in cell.people)
                 for cell in chart_cells
                 if cell.people

@@ -5,6 +5,11 @@ so each function here builds its own images and returns PNG bytes, and no
 image escapes it. Rendering is CPU-bound; async front ends should run it in a
 thread.
 
+Text goes through Pango where ImageMagick has it (Debian's
+libmagickcore-6.q16-6-extra), so emoji and other scripts fall back to fonts
+that have them; :mod:`.markup` escapes it. Without Pango, plain DejaVu Sans
+is used and unknown glyphs show as boxes.
+
 Avatars are passed in as bytes keyed by user id. Only PNG, JPEG, GIF and WebP
 are decoded, and always with an explicit decoder, so untrusted bytes never
 reach ImageMagick's other coders.
@@ -17,9 +22,11 @@ from pathlib import Path
 from wand.color import Color
 from wand.drawing import Drawing
 from wand.image import COMPOSITE_OPERATORS, Image
+from wand.version import formats
 
 from .images import sniff
 from .layout import Box, CellPlan, Plan, Slot, Theme, plan_chart, plan_tile
+from .markup import markup
 from .view import Cell
 
 # ImageMagick 7 calls it copy_alpha, 6 (Debian 12's) copy_opacity
@@ -41,6 +48,31 @@ def find_font(theme: Theme) -> str | None:
         return next((p for p in _FONT_CANDIDATES if Path(p).is_file()), None)
 
 
+def has_pango() -> bool:
+        """Whether ImageMagick can render Pango markup (font fallback)."""
+        return bool(formats("PANGO"))
+
+
+def _pango_text(text: str, size: int, theme: Theme) -> Image | None:
+        """Render ``text`` with Pango, or return None if that fails.
+
+        Pango falls back per glyph to other fonts (emoji, other scripts).
+        """
+        try:
+                # Set these before reading: Image(resolution=..., background=
+                # ...) is ignored without a size, giving 96 dpi on white
+                img = Image()
+                img.background_color = Color("transparent")
+                img.resolution = (72, 72)
+                img.read(
+                        filename="pango:"
+                        + markup(text, size, theme.text_color, theme.family)
+                )
+        except Exception:  # noqa: BLE001 (ImageMagick raises many types)
+                return None
+        return img
+
+
 def _text(
         canvas: Image,
         box: Box,
@@ -49,6 +81,13 @@ def _text(
         theme: Theme,
 ) -> None:
         if not text or size <= 0:
+                return
+        rendered = _pango_text(text, size, theme) if has_pango() else None
+        if rendered is not None:
+                with rendered:
+                        left = box.x + (box.w - rendered.width) // 2
+                        top = box.y + (box.h - rendered.height) // 2
+                        canvas.composite(rendered, left=left, top=top)
                 return
         with Drawing() as draw:
                 font = find_font(theme)
@@ -175,7 +214,7 @@ def _paint_cell(
 ) -> None:
         box = cell.box
         with Drawing() as draw:
-                draw.fill_color = Color(theme.cell_colors[cell.alignment])
+                draw.fill_color = Color(cell.color)
                 corners = (
                         {"radius": theme.corner_radius}
                         if theme.corner_radius
@@ -190,7 +229,7 @@ def _paint_cell(
                         **corners,
                 )
                 draw(canvas)
-        _text(canvas, cell.label_box, cell.alignment, cell.label_size, theme)
+        _text(canvas, cell.label_box, cell.label, cell.label_size, theme)
         for slot in cell.slots:
                 _paint_slot(canvas, slot, avatars, theme)
         if cell.overflow_box is not None:

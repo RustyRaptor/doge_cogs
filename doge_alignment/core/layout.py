@@ -41,7 +41,9 @@ class Theme:
         ring_color: str = "#ffffff"
         absent_ring_color: str = "#555555"
         placeholder_color: str = "#40444b"
-        # A TrueType font file; None lets :mod:`.render` find one
+        # Font family for Pango, and a TrueType file for when Pango is
+        # missing (None lets :mod:`.render` find one)
+        family: str = "DejaVu Sans"
         font: str | None = None
         cell_size: int = 360
         tile_size: int = 512
@@ -55,6 +57,8 @@ class Theme:
         min_avatar: int = 36
         # Names go under avatars at least this big
         min_named_avatar: int = 56
+        # Long cell labels shrink to this font size, then get cut
+        min_label: int = 16
         ring_ratio: float = 0.05
 
 
@@ -87,6 +91,8 @@ class CellPlan:
         box: Box
         label_box: Box
         label_size: int
+        label: str = ""
+        color: str = "#6b6b6b"
         slots: tuple[Slot, ...] = ()
         # "+N" badge for people who didn't fit, and how many
         overflow: int = 0
@@ -181,6 +187,18 @@ def capacity(area: Box, theme: Theme) -> int:
         )
 
 
+def max_chars(width: int, font_size: int) -> int:
+        """How many characters fit in ``width`` at ``font_size``."""
+        return max(int(width / (font_size * CHAR_WIDTH)), 3)
+
+
+def fit_font(text: str, width: int, largest: int) -> int:
+        """Return the font size, at most ``largest``, that fits ``text``."""
+        if not text:
+                return largest
+        return max(min(largest, int(width / (len(text) * CHAR_WIDTH))), 1)
+
+
 def truncate(text: str, max_chars: int) -> str:
         """Shorten ``text`` to ``max_chars``, ending in an ellipsis if cut."""
         if len(text) <= max_chars:
@@ -215,11 +233,10 @@ def _slot(person: Person, box: Box, grid: Grid, gap: int) -> Slot:
         font_size = grid.name_height - 4
         width = box.w + gap
         # Keep a few pixels between neighbouring names
-        max_chars = max(int((width - 6) / (font_size * CHAR_WIDTH)), 3)
         return Slot(
                 person,
                 box,
-                truncate(person.name, max_chars),
+                truncate(person.name, max_chars(width - 6, font_size)),
                 Box(box.x - gap // 2, box.y + box.h, width, grid.name_height),
                 font_size,
         )
@@ -236,7 +253,19 @@ def plan_cell(cell: Cell, box: Box, theme: Theme) -> CellPlan:
                 box.w - 2 * pad,
                 box.h - label_h - 2 * pad - pad // 2,
         )
-        base = CellPlan(cell.alignment, box, label_box, round(label_h * 0.62))
+        largest = round(label_h * 0.62)
+        label_size = max(
+                fit_font(cell.title, label_box.w, largest),
+                min(theme.min_label, largest),
+        )
+        base = CellPlan(
+                cell.alignment,
+                box,
+                label_box,
+                label_size,
+                truncate(cell.title, max_chars(label_box.w, label_size)),
+                cell.color or theme.cell_colors[cell.alignment],
+        )
         people = cell.people
         if not people:
                 return base
@@ -291,6 +320,7 @@ _PIXEL_FIELDS = (
         "max_avatar",
         "min_avatar",
         "min_named_avatar",
+        "min_label",
 )
 
 

@@ -10,14 +10,14 @@
     "requirements": [
         "Wand==0.7.2"
     ],
-    "description": "A 3x3 D&D alignment chart per server, drawn as one picture or as a gallery of nine, with members' avatars. Slash and text commands (`alignment`), alignment admins, YAML export and import. Needs ImageMagick (libmagickwand) on the bot's host for pictures; without it the chart is shown as text.",
+    "description": "A 3x3 D&D alignment chart per server, drawn as one picture or as a gallery of nine, with members' avatars. Custom labels and colours, suggestions that members accept or reject, guesses from a local language model, alignment admins, YAML export and import. Slash and text commands (`alignment`). Needs ImageMagick (libmagickwand, plus its Pango coder for emoji) on the bot's host; without it the chart is shown as text.",
     "tags": [
         "fun",
         "alignment",
         "dnd",
         "image"
     ],
-    "end_user_data_statement": "This cog stores your alignment, display name and avatar URL for each server's chart, and whether you are an alignment admin there. `alignment remove` takes you off a chart; Red's data deletion removes you everywhere.",
+    "end_user_data_statement": "This cog stores your alignment, display name and avatar URL for each server's chart, whether you are an alignment admin there, pending alignment suggestions for and by you, and whether you allow guesses. `alignment guess` sends up to 35 of your recent messages to the bot owner's own language model to suggest an alignment; they aren't stored. `alignment guessing false` blocks guesses, `alignment remove` takes you off a chart, and Red's data deletion removes you everywhere.",
     "min_bot_version": "3.5.0",
     "min_python_version": [
         3,

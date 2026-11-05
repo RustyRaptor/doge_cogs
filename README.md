@@ -17,18 +17,33 @@ A 3x3 D&D alignment chart per server, drawn with members' avatars cut into circl
 | Command | |
 |---|---|
 | `alignment [image\|gallery\|text]` (`/alignment show`) | the chart: one picture, nine pictures in Discord's 3x3 media gallery, or text |
-| `alignment set <alignment> [member]` | put yourself on the chart, or someone who isn't on it yet; admins can move anyone. Takes `chaotic good`, `CG`, `neutral`, … |
+| `alignment set <cell> [member]` | put yourself on the chart, or someone who isn't on it yet; admins can move anyone. Takes the server's labels, `CG`, `neutral`, … |
+| `alignment suggest <member> <cell>` | suggest where someone belongs; they get Accept/Reject buttons (they still work after a restart) |
+| `alignment suggestions [member]`, `accept <who>`, `reject <who>` | list and answer suggestions by command (`who` is a mention or `guess`) |
+| `alignment guess [member]` | a local language model reads up to 35 recent messages (in channels you can both see) and suggests a cell |
+| `alignment guessing <true\|false>` | allow or block guesses from your messages |
 | `alignment remove [user]` | take yourself off; admins can take anyone off |
 | `alignment prune` | admins: take off everyone who has left the server (until then they show greyed out) |
 | `alignment clear` | admins: take everyone off, after a confirmation |
 | `alignment style <image\|gallery\|text>` | admins: how the chart shows by default |
-| `alignment export` / `alignment import <file>` | the chart as YAML; admins can import, which replaces everyone |
+| `alignment chart` | the chart's title, axes and labels; admins change them with `chart title`, `chart columns <l> <m> <r>`, `chart rows <t> <m> <b>`, `chart label <cell> [text]`, `chart color <cell> [#hex]`, `chart reset` |
+| `alignment export` / `alignment import <file>` | the chart (and custom labels) as YAML; admins can import, which replaces everyone |
 | `alignment admin add\|remove\|list` | alignment admins, who may move anyone |
 
 Admins are the alignment admins plus, always, the server owner, members with Administrator, Red's admin and
 mod roles, and the bot owner. Names and avatars are looked up live; people who left keep the ones saved when
-they were placed. Pictures need ImageMagick (`libmagickwand`) on the bot's host; without it, `alignment` falls
-back to text.
+they were placed. Custom charts relabel the nine cells (columns × rows, or one cell at a time) without moving
+anyone: entries keep their classic position.
+
+Pictures need ImageMagick (`libmagickwand`) on the bot's host; without it, `alignment` falls back to text. With
+ImageMagick's Pango coder (Debian: `libmagickcore-6.q16-6-extra`) text falls back per glyph to other fonts, so
+names with emoji (with `fonts-noto-color-emoji`) and other scripts render. All text going to Pango is escaped
+for both Pango markup and ImageMagick's own `%`/`\`/`@` escapes, since names are untrusted.
+
+Guessing needs an OpenAI-compatible chat server (llama.cpp, Ollama, vLLM): `ALIGNMENT_MODEL_URL` (and
+`ALIGNMENT_MODEL_NAME`, `ALIGNMENT_MODEL_KEY`) in the bot's environment, or `[p]set api alignment_model
+url,<url> model,<name>`. The answer is constrained by a JSON schema to the chart's own nine labels and only
+ever becomes a suggestion. dogebot runs Qwen2.5-7B-Instruct on a GTX 1080 for it.
 
 ### Layout of the code
 
@@ -40,8 +55,12 @@ checks), so a command-line tool or web app can reuse all of it:
 | `core/alignments.py` | the nine alignments, their grid positions, parsing `CG`/`chaotic-good` |
 | `core/chart.py` | the immutable `Chart` and pure operations: place, remove, clear, admins, permission rules |
 | `core/storage.py` | to and from plain data (Red's Config) and YAML |
-| `core/view.py` | the nine cells to show, with live names and who has left |
+| `core/spec.py` | custom charts: title, axis names, per-cell labels and colours, parsing cells by label |
+| `core/suggestions.py` | suggesting a cell for someone, accepting and rejecting |
+| `core/guess.py` | the model prompt, its JSON schema, reading the answer, and the one HTTP call |
+| `core/view.py` | the nine cells to show, with labels, live names and who has left |
 | `core/layout.py` | pure geometry: where each label, avatar and name goes |
+| `core/markup.py` | Pango markup, escaped for Pango and ImageMagick |
 | `core/render.py` | paints a layout with ImageMagick (Wand); the only stateful drawing code |
 | `core/fetch.py` | downloads avatars (HTTPS only, size-limited, image formats only) |
 | `cog.py`, `ui.py` | Red Config, permissions, commands, the gallery and confirm views |

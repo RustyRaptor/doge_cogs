@@ -83,3 +83,57 @@ def test_from_yaml_is_strict(text: str, message: str) -> None:
         """Imports fail loudly instead of silently dropping people."""
         with pytest.raises(ChartFormatError, match=message):
                 from_yaml(text)
+
+
+def test_custom_spec_round_trips_and_exports() -> None:
+        """Custom labels survive Config and YAML; classic ones stay out."""
+        from doge_alignment.core.chart import with_spec  # noqa: PLC0415
+        from doge_alignment.core.spec import (  # noqa: PLC0415
+                ChartSpec,
+                with_color,
+                with_columns,
+                with_label,
+                with_title,
+        )
+
+        spec = with_color(
+                with_label(
+                        with_columns(
+                                with_title(ChartSpec(), "Pizza"),
+                                "Purist",
+                                "Neutral",
+                                "Rebel",
+                        ),
+                        "True Neutral",
+                        "Margherita",
+                ),
+                "Chaotic Evil",
+                "#aa2200",
+        )
+        chart = with_spec(chart_with(("1", "True Neutral")), spec)
+        assert from_data(to_data(chart)) == chart
+        text = to_yaml(chart)
+        assert "chart:" in text
+        assert from_yaml(text).spec == spec
+        assert "chart:" not in to_yaml(chart_with(("1", "True Neutral")))
+
+
+def test_bad_stored_spec_parts_fall_back() -> None:
+        """Broken spec pieces in Config don't break the chart."""
+        chart = from_data(
+                {
+                        "users": {},
+                        "spec": {
+                                "title": "",
+                                "columns": ["a", "b"],
+                                "rows": ["Up", "Mid", "Down"],
+                                "labels": {"nope": "x", "cg": "Rebel"},
+                                "colors": {"lg": "red", "le": "#00ff00"},
+                        },
+                }
+        )
+        assert chart.spec.title == "Alignment chart"
+        assert chart.spec.columns == ("Lawful", "Neutral", "Chaotic")
+        assert chart.spec.rows == ("Up", "Mid", "Down")
+        assert dict(chart.spec.labels) == {"Chaotic Good": "Rebel"}
+        assert dict(chart.spec.colors) == {"Lawful Evil": "#00ff00"}

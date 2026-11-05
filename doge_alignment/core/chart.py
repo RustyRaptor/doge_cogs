@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 from .alignments import AlignmentName
+from .spec import ChartSpec, is_custom
 
 
 @dataclass(frozen=True)
@@ -29,22 +30,45 @@ def _frozen(users: Mapping[str, Entry]) -> Mapping[str, Entry]:
         return MappingProxyType(dict(users))
 
 
+# Pending suggestions: target id -> suggester id -> suggested cell
+Suggestions = Mapping[str, Mapping[str, AlignmentName]]
+
+
+def freeze_suggestions(suggestions: Suggestions) -> Suggestions:
+        """Return an immutable copy, without targets that have none left."""
+        return MappingProxyType(
+                {
+                        target: MappingProxyType(dict(by))
+                        for target, by in suggestions.items()
+                        if by
+                }
+        )
+
+
 @dataclass(frozen=True)
 class Chart:
         """A chart. User ids are strings, as Red's Config needs."""
 
         users: Mapping[str, Entry] = field(default_factory=lambda: _frozen({}))
         admins: tuple[str, ...] = ()
+        suggestions: Suggestions = field(
+                default_factory=lambda: freeze_suggestions({})
+        )
+        spec: ChartSpec = field(default_factory=ChartSpec)
 
 
 def make_chart(
         users: Mapping[str, Entry] | None = None,
         admins: Iterable[str] = (),
+        suggestions: Suggestions | None = None,
+        spec: ChartSpec | None = None,
 ) -> Chart:
         """Return a chart, with ``admins`` de-duplicated in order."""
         return Chart(
                 users=_frozen(users or {}),
                 admins=tuple(dict.fromkeys(admins)),
+                suggestions=freeze_suggestions(suggestions or {}),
+                spec=spec or ChartSpec(),
         )
 
 
@@ -80,18 +104,39 @@ def unplace_all(chart: Chart, user_ids: Iterable[str]) -> Chart:
 
 
 def clear(chart: Chart) -> Chart:
-        """Return ``chart`` with nobody on it, keeping the admins."""
-        return _with_users(chart, {})
+        """Return ``chart`` with nobody on it and no suggestions.
+
+        Admins and the chart's labels stay.
+        """
+        return replace(
+                _with_users(chart, {}), suggestions=freeze_suggestions({})
+        )
 
 
-def replace_users(chart: Chart, other: Chart) -> Chart:
-        """Return ``chart`` with ``other``'s people and its own admins."""
-        return _with_users(chart, other.users)
+def import_chart(chart: Chart, other: Chart) -> Chart:
+        """Return ``chart`` with ``other``'s people (an import).
+
+        The admins stay ``chart``'s own. ``other``'s labels come along if it
+        has custom ones. Pending suggestions are dropped.
+        """
+        return replace(
+                chart,
+                users=_frozen(other.users),
+                suggestions=freeze_suggestions({}),
+                spec=other.spec if is_custom(other.spec) else chart.spec,
+        )
+
+
+def with_spec(chart: Chart, spec: ChartSpec) -> Chart:
+        """Return ``chart`` with new labels and colours."""
+        return replace(chart, spec=spec)
 
 
 def add_admin(chart: Chart, user_id: str) -> Chart:
         """Return ``chart`` where ``user_id`` is an alignment admin."""
-        return make_chart(chart.users, (*chart.admins, user_id))
+        return replace(
+                chart, admins=tuple(dict.fromkeys((*chart.admins, user_id)))
+        )
 
 
 def remove_admin(chart: Chart, user_id: str) -> Chart:
@@ -102,8 +147,19 @@ def remove_admin(chart: Chart, user_id: str) -> Chart:
 
 
 def forget_user(chart: Chart, user_id: str) -> Chart:
-        """Return ``chart`` with no trace of ``user_id`` (data deletion)."""
-        return remove_admin(unplace(chart, user_id), user_id)
+        """Return ``chart`` with no trace of ``user_id`` (data deletion).
+
+        That includes suggestions for them and suggestions they made.
+        """
+        suggestions = {
+                target: {k: v for k, v in by.items() if k != user_id}
+                for target, by in chart.suggestions.items()
+                if target != user_id
+        }
+        return replace(
+                remove_admin(unplace(chart, user_id), user_id),
+                suggestions=freeze_suggestions(suggestions),
+        )
 
 
 def is_admin(chart: Chart, user_id: str) -> bool:

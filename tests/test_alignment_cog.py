@@ -75,6 +75,14 @@ def test_saved_data_is_plain() -> None:
                         }
                 },
                 "admins": ["1"],
+                "suggestions": {},
+                "spec": {
+                        "title": "Alignment chart",
+                        "columns": ["Lawful", "Neutral", "Chaotic"],
+                        "rows": ["Good", "Neutral", "Evil"],
+                        "labels": {},
+                        "colors": {},
+                },
         }
 
 
@@ -131,8 +139,19 @@ async def test_slash_commands_are_valid(red: Red) -> None:
                 "style",
                 "export",
                 "import",
+                "suggest",
+                "suggestions",
+                "accept",
+                "reject",
+                "guess",
+                "guessing",
+                "chart",
                 "admin",
         }
+        chart = [o["name"] for o in options["chart"]["options"]]
+        assert chart == ["title", "columns", "rows", "label", "color", "reset"]
+        suggest = [o["name"] for o in options["suggest"]["options"]]
+        assert suggest == ["member", "alignment"]
         set_options = [o["name"] for o in options["set"]["options"]]
         assert set_options == ["alignment", "member"]
         assert options["set"]["options"][0]["autocomplete"] is True
@@ -141,3 +160,37 @@ async def test_slash_commands_are_valid(red: Red) -> None:
         admin = [o["name"] for o in options["admin"]["options"]]
         assert admin == ["add", "remove", "list"]
         await cog.cog_unload()
+
+
+def test_parse_suggester() -> None:
+        """Mentions, ids and 'guess'."""
+        from doge_alignment.cog import parse_suggester  # noqa: PLC0415
+
+        assert parse_suggester("<@123>") == "123"
+        assert parse_suggester("<@!123>") == "123"
+        assert parse_suggester(" 456 ") == "456"
+        assert parse_suggester("Guess") == "guess"
+        assert parse_suggester("bob") is None
+
+
+def test_model_config_from_env_then_tokens() -> None:
+        """Environment wins over Red's shared API tokens; unset is None."""
+        from doge_alignment.cog import model_config  # noqa: PLC0415
+
+        assert model_config({}, {}) is None
+        tokens = {"url": "http://t", "model": "tm", "key": "tk"}
+        from_tokens = model_config({}, tokens)
+        assert from_tokens is not None
+        assert (
+                from_tokens.base_url,
+                from_tokens.model,
+                from_tokens.api_key,
+        ) == (
+                "http://t",
+                "tm",
+                "tk",
+        )
+        env = {"ALIGNMENT_MODEL_URL": "http://e"}
+        from_env = model_config(env, tokens)
+        assert from_env is not None
+        assert (from_env.base_url, from_env.model) == ("http://e", "tm")
