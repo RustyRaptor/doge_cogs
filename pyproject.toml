@@ -10,8 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     # The Red that dogebot runs; cogs get discord.py, PyYAML etc. from it
     "red-discordbot==3.5.24",
-    # doge_alignment pictures (needs ImageMagick's libmagickwand)
-    "wand>=0.6.13",
+    # doge_alignment pictures (needs ImageMagick's libmagickwand); keep equal
+    # to doge_alignment/info.json, which is what the bot installs
+    "wand==0.7.2",
 ]
 
 

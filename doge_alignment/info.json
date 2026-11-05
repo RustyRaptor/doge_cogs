@@ -8,7 +8,7 @@
     "name": "doge_alignment",
     "short": "D&D alignment chart for your server, drawn with members' avatars",
     "requirements": [
-        "Wand>=0.6.13"
+        "Wand==0.7.2"
     ],
     "description": "A 3x3 D&D alignment chart per server, drawn as one picture or as a gallery of nine, with members' avatars. Slash and text commands (`alignment`), alignment admins, YAML export and import. Needs ImageMagick (libmagickwand) on the bot's host for pictures; without it the chart is shown as text.",
     "tags": [

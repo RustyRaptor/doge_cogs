@@ -17,8 +17,12 @@ run = "uv run ty check"
 [tasks.test]
 run = "uv run pytest"
 
+[tasks.test-container]
+description = "Run the tests inside dogebot's Red image on yveltal (its ImageMagick, fonts and Wand)"
+run = "scripts/test-container.sh"
+
 [tasks.check]
-depends = ["lint", "typecheck", "test"]
+depends = ["lint", "typecheck", "test", "test-container"]
 
 [tasks.generate-client]
 description = "Regenerate clients/media-preload-client from the live media-preload spec"

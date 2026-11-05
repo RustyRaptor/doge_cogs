@@ -100,3 +100,10 @@ self-contained, so Red's Downloader installs it without installing this repo as 
 mise install && mise run sync
 mise run fmt && mise run check
 ```
+
+`mise run check` includes `mise run test-container`, which copies this checkout to yveltal and runs the tests
+inside dogebot's Red image (`localhost/dogebot-red:latest`), with the bot's Python, ImageMagick 6, fonts and
+the exact requirements from each `info.json`. The dev machine has ImageMagick 7, and the two differ (an
+operator name broke pictures once), so run it before pushing anything that draws. Set `DOGEBOT_HOST` or
+`DOGEBOT_RED_IMAGE` to test elsewhere; extra arguments go to pytest. Keep `wand` in `pyproject.toml` equal to
+`doge_alignment/info.json`. ImageMagick itself is pinned in dogebot's `containers/red/Containerfile`.
