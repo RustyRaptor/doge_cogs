@@ -1,10 +1,25 @@
 {
-    "author" : ["GodEmperorDoge", "Victor Angeles", "ur mom"],
-    "install_msg" : "YES FUCK YEAH WE INSTALLED THIS SHIT.",
-    "name" : "doge_alignment",
-    "short" : "Alignment chart manager",
-    "requirements" : ["doge_cogs @ git+https://github.com/RustyRaptor/doge_cogs.git"],
-    "description": "Alignment chart manager",
-    "permissions" : [],
-    "tags" : [""]
+    "author": [
+        "GodEmperorDoge",
+        "Victor Angeles",
+        "ur mom"
+    ],
+    "install_msg": "YES FUCK YEAH WE INSTALLED THIS SHIT.",
+    "name": "doge_alignment",
+    "short": "D&D alignment chart for your server",
+    "requirements": [],
+    "description": "Slash commands to put yourself (and others) on a server's 3x3 D&D alignment chart, with alignment admins who can move anyone.",
+    "tags": [
+        "fun",
+        "alignment",
+        "dnd"
+    ],
+    "end_user_data_statement": "This cog stores your alignment, display name and avatar URL for each server's chart, and whether you are an alignment admin there. /alignment_remove takes you off a chart; Red's data deletion removes you everywhere.",
+    "min_bot_version": "3.5.0",
+    "min_python_version": [
+        3,
+        11,
+        0
+    ],
+    "type": "COG"
 }

@@ -1,341 +1,241 @@
-from __future__ import annotations
+"""Slash commands for a server's alignment chart."""
 
-from pathlib import Path
+from typing import Literal
 
 import discord
-from redbot.core import app_commands, commands
+from redbot.core import Config, app_commands, commands
+from redbot.core.bot import Red
 
-from doge_cogs.alignment import (
-        load_file_buffer,
-        parse_alignment_chart,
+from .chart import (
+        ALIGNMENTS,
+        AlignmentChart,
+        add_admin,
+        as_alignment,
+        forget_user,
+        format_chart,
+        may_manage_admins,
+        may_set,
+        normalize_chart,
+        remove_admin,
         remove_user_alignment,
-        save_file_buffer,
-        serialize_alignment_chart,
         set_user_alignment,
 )
 
+RequestType = Literal["discord_deleted_user", "owner", "user", "user_strict"]
+
+ALIGNMENT_CHOICES = [app_commands.Choice(name=a, value=a) for a in ALIGNMENTS]
+
+
+async def _reply(interaction: discord.Interaction, text: str) -> None:
+        await interaction.response.send_message(text, ephemeral=True)
+
 
 class AlignmentCog(commands.Cog):
-        """Cog for keeping track of alignment charts."""
+        """Keep track of everyone's D&D alignment."""
 
-        def __init__(self, bot) -> None:
+        def __init__(self, bot: Red) -> None:
+                """Create the cog."""
                 self.bot = bot
-                self.data_dir = Path(__file__).parent / "data"
-                self.data_dir.mkdir(parents=True, exist_ok=True)
+                self.config = Config.get_conf(
+                        self, identifier=0xA119E5C4A7, force_registration=True
+                )
+                self.config.register_guild(users={}, admins=[])
 
-        def _get_server_file(self, guild_id: int) -> Path:
-                return self.data_dir / f"{guild_id}.yaml"
+        async def red_delete_data_for_user(
+                self, *, requester: RequestType, user_id: int
+        ) -> None:
+                """Take a user off every chart and every admin list."""
+                del requester
+                for guild_id in await self.config.all_guilds():
+                        group = self.config.guild_from_id(guild_id)
+                        chart = normalize_chart(await group.all())
+                        await group.set(forget_user(chart, str(user_id)))
+
+        async def _chart(self, guild: discord.Guild) -> AlignmentChart:
+                return normalize_chart(await self.config.guild(guild).all())
+
+        async def _save(
+                self, guild: discord.Guild, chart: AlignmentChart
+        ) -> None:
+                await self.config.guild(guild).set(chart)
+
+        async def _is_bot_owner(
+                self, user: discord.User | discord.Member
+        ) -> bool:
+                return await self.bot.is_owner(user)
 
         @app_commands.command(
                 name="alignment_show",
-                description="Display current alignment chart data.",
+                description="Show this server's alignment chart.",
         )
-        async def alignment_show(self, interaction: discord.Interaction):
-                """Display current alignment chart (text form for now)."""
-                guild_id = interaction.guild_id
-                if guild_id is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
-                        )
+        @app_commands.guild_only()
+        async def alignment_show(
+                self, interaction: discord.Interaction
+        ) -> None:
+                """Show the chart as text."""
+                if interaction.guild is None:
                         return
-
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-
+                chart = await self._chart(interaction.guild)
                 if not chart["users"]:
-                        await interaction.response.send_message(
-                                "No alignments set yet.", ephemeral=True
-                        )
+                        await _reply(interaction, "No alignments set yet.")
                         return
-
-                lines = []
-                for uid, entry in chart["users"].items():
-                        lines.append(
-                                f"**{entry['display_name']}** — "
-                                f"{entry['alignment']}"
-                        )
-                text_output = "\n".join(lines)
-
-                await interaction.response.send_message(
-                        text_output, ephemeral=True
-                )
+                await _reply(interaction, format_chart(chart))
 
         @app_commands.command(
                 name="alignment_set", description="Set your alignment."
         )
-        @app_commands.describe(alignment="Choose your D&D style alignment.")
-        @app_commands.choices(
-                alignment=[
-                        app_commands.Choice(name=a, value=a)
-                        for a in (
-                                "Lawful Good",
-                                "Neutral Good",
-                                "Chaotic Good",
-                                "Lawful Neutral",
-                                "True Neutral",
-                                "Chaotic Neutral",
-                                "Lawful Evil",
-                                "Neutral Evil",
-                                "Chaotic Evil",
-                        )
-                ]
-        )
+        @app_commands.guild_only()
+        @app_commands.describe(alignment="Your D&D alignment.")
+        @app_commands.choices(alignment=ALIGNMENT_CHOICES)
         async def alignment_set(
                 self,
                 interaction: discord.Interaction,
                 alignment: app_commands.Choice[str],
-        ):
-                guild_id = interaction.guild_id
-                if guild_id is None or interaction.user is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
-                        )
-                        return
-
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-
-                updated_chart = set_user_alignment(
-                        chart,
-                        user_id=str(interaction.user.id),
-                        alignment=alignment.value,  # type: ignore
-                        display_name=interaction.user.display_name,
-                        avatar_url=(
-                                interaction.user.display_avatar.url
-                                if interaction.user.display_avatar
-                                else None
-                        ),
-                )
-
-                save_file_buffer(
-                        file_path, serialize_alignment_chart(updated_chart)
-                )
-                await interaction.response.send_message(
-                        f"Alignment set to **{alignment.value}**.",
-                        ephemeral=True,
-                )
-
-        @app_commands.command(
-                name="alignment_remove",
-                description="Remove your alignment from the chart.",
-        )
-        async def alignment_remove(self, interaction: discord.Interaction):
-                guild_id = interaction.guild_id
-                if guild_id is None or interaction.user is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
-                        )
-                        return
-
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-
-                updated_chart = remove_user_alignment(
-                        chart, str(interaction.user.id)
-                )
-                save_file_buffer(
-                        file_path, serialize_alignment_chart(updated_chart)
-                )
-
-                await interaction.response.send_message(
-                        "Your alignment has been removed.", ephemeral=True
-                )
+        ) -> None:
+                """Put yourself on the chart."""
+                await self._set(interaction, alignment.value, None)
 
         @app_commands.command(
                 name="alignment_set_other",
-                description="Set alignment for another user (with restrictions).",
+                description="Set someone's alignment (admins can move anyone).",
         )
+        @app_commands.guild_only()
         @app_commands.describe(
-                target="The user whose alignment to set (leave blank to set your own)",
-                alignment="Choose the alignment to set",
+                target="Whose alignment to set (blank for your own)",
+                alignment="The alignment to set",
         )
-        @app_commands.choices(
-                alignment=[
-                        app_commands.Choice(name=a, value=a)
-                        for a in (
-                                "Lawful Good",
-                                "Neutral Good",
-                                "Chaotic Good",
-                                "Lawful Neutral",
-                                "True Neutral",
-                                "Chaotic Neutral",
-                                "Lawful Evil",
-                                "Neutral Evil",
-                                "Chaotic Evil",
-                        )
-                ]
-        )
+        @app_commands.choices(alignment=ALIGNMENT_CHOICES)
         async def alignment_set_other(
                 self,
                 interaction: discord.Interaction,
                 alignment: app_commands.Choice[str],
                 target: discord.Member | None = None,
-        ):
-                guild_id = interaction.guild_id
-                if guild_id is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
-                        )
+        ) -> None:
+                """Place someone on the chart."""
+                await self._set(interaction, alignment.value, target)
+
+        async def _set(
+                self,
+                interaction: discord.Interaction,
+                value: str,
+                target: discord.Member | None,
+        ) -> None:
+                guild = interaction.guild
+                if guild is None:
                         return
-
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-
-                # Default to the person invoking if no target given
-                target_member = target or interaction.user
+                member = target or interaction.user
                 invoker_id = str(interaction.user.id)
-                target_id = str(target_member.id)
-
-                is_bot_owner = await self.bot.is_owner(interaction.user)
-                is_admin = invoker_id in chart["admins"] or is_bot_owner
-                # Rule enforcement
-                if (
-                        target_id != invoker_id
-                        and not is_admin
-                        and target_id in chart["users"]
+                target_id = str(member.id)
+                chart = await self._chart(guild)
+                privileged = await self._is_bot_owner(interaction.user)
+                if not may_set(
+                        chart, invoker_id, target_id, privileged=privileged
                 ):
-                        await interaction.response.send_message(
-                                (
-                                        f"{target_member.display_name}"
-                                        " already has an alignment set."
-                                        " You cannot change it."
-                                ),
-                                ephemeral=True,
+                        await _reply(
+                                interaction,
+                                f"{member.display_name} already has an "
+                                "alignment; only alignment admins can change "
+                                "it.",
                         )
                         return
-
-                # Apply update
-                updated_chart = set_user_alignment(
-                        chart,
-                        user_id=target_id,
-                        alignment=alignment.value,
-                        display_name=target_member.display_name,
-                        avatar_url=(
-                                target_member.display_avatar.url
-                                if target_member.display_avatar
-                                else None
+                alignment = as_alignment(value)
+                await self._save(
+                        guild,
+                        set_user_alignment(
+                                chart,
+                                user_id=target_id,
+                                alignment=alignment,
+                                display_name=member.display_name,
+                                avatar_url=member.display_avatar.url,
                         ),
                 )
-
-                save_file_buffer(
-                        file_path, serialize_alignment_chart(updated_chart)
+                who = (
+                        "Your alignment"
+                        if target_id == invoker_id
+                        else f"Alignment for **{member.display_name}**"
                 )
+                await _reply(interaction, f"{who} set to **{alignment}**.")
 
-                if target_id == invoker_id:
-                        await interaction.response.send_message(
-                                f"Your alignment set to **{alignment.value}**.",
-                                ephemeral=True,
-                        )
-                else:
-                        await interaction.response.send_message(
-                                f"Alignment for **{target_member.display_name}** set to **{alignment.value}**.",
-                                ephemeral=True,
-                        )
+        @app_commands.command(
+                name="alignment_remove",
+                description="Take yourself off the alignment chart.",
+        )
+        @app_commands.guild_only()
+        async def alignment_remove(
+                self, interaction: discord.Interaction
+        ) -> None:
+                """Remove your own alignment."""
+                if interaction.guild is None:
+                        return
+                chart = await self._chart(interaction.guild)
+                await self._save(
+                        interaction.guild,
+                        remove_user_alignment(chart, str(interaction.user.id)),
+                )
+                await _reply(interaction, "Your alignment has been removed.")
+
+        async def _may_manage_admins(
+                self, interaction: discord.Interaction, chart: AlignmentChart
+        ) -> bool:
+                guild = interaction.guild
+                privileged = (
+                        guild is not None
+                        and interaction.user.id == guild.owner_id
+                ) or await self._is_bot_owner(interaction.user)
+                return may_manage_admins(
+                        chart, str(interaction.user.id), privileged=privileged
+                )
 
         @app_commands.command(
                 name="alignment_add_admin",
-                description="Add a user as alignment admin.",
+                description="Let someone move anyone on the alignment chart.",
         )
+        @app_commands.guild_only()
         async def alignment_add_admin(
                 self, interaction: discord.Interaction, user: discord.Member
-        ):
-                guild_id = interaction.guild_id
-                if guild_id is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
+        ) -> None:
+                """Make ``user`` an alignment admin."""
+                if interaction.guild is None:
+                        return
+                chart = await self._chart(interaction.guild)
+                if not await self._may_manage_admins(interaction, chart):
+                        await _reply(
+                                interaction,
+                                "Only the server owner and alignment admins "
+                                "can change admins.",
                         )
                         return
-
-                # Only existing admins or server owner can add new admins
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-                is_bot_owner = await self.bot.is_owner(interaction.user)
-                invoker_id = str(interaction.user.id)
-                if not (
-                        invoker_id == str(interaction.guild.owner_id)
-                        or invoker_id in chart["admins"]
-                        or is_bot_owner
-                ):
-                        await interaction.response.send_message(
-                                "You do not have permission to modify admins.",
-                                ephemeral=True,
-                        )
-                        return
-
-                if str(user.id) not in chart["admins"]:
-                        chart["admins"].append(str(user.id))
-                        save_file_buffer(
-                                file_path, serialize_alignment_chart(chart)
-                        )
-
-                await interaction.response.send_message(
+                await self._save(
+                        interaction.guild, add_admin(chart, str(user.id))
+                )
+                await _reply(
+                        interaction,
                         f"{user.display_name} is now an alignment admin.",
-                        ephemeral=True,
                 )
 
         @app_commands.command(
                 name="alignment_remove_admin",
-                description="Remove a user from alignment admins.",
+                description="Remove someone from the alignment admins.",
         )
+        @app_commands.guild_only()
         async def alignment_remove_admin(
                 self, interaction: discord.Interaction, user: discord.Member
-        ):
-                guild_id = interaction.guild_id
-                if guild_id is None:
-                        await interaction.response.send_message(
-                                "This command must be used in a server.",
-                                ephemeral=True,
+        ) -> None:
+                """Stop ``user`` being an alignment admin."""
+                if interaction.guild is None:
+                        return
+                chart = await self._chart(interaction.guild)
+                if not await self._may_manage_admins(interaction, chart):
+                        await _reply(
+                                interaction,
+                                "Only the server owner and alignment admins "
+                                "can change admins.",
                         )
                         return
-
-                file_path = self._get_server_file(guild_id)
-                raw_data = load_file_buffer(file_path)
-                chart = parse_alignment_chart(raw_data)
-
-                is_bot_owner = await self.bot.is_owner(interaction.user)
-                invoker_id = str(interaction.user.id)
-                if not (
-                        invoker_id == str(interaction.guild.owner_id)
-                        or invoker_id in chart["admins"]
-                        or is_bot_owner
-                ):
-                        await interaction.response.send_message(
-                                "You do not have permission to modify admins.",
-                                ephemeral=True,
-                        )
-                        return
-
-                if (
-                        invoker_id != str(interaction.guild.owner_id)
-                        and invoker_id not in chart["admins"]
-                ):
-                        await interaction.response.send_message(
-                                "You do not have permission to remove admins.",
-                                ephemeral=True,
-                        )
-                        return
-
-                if str(user.id) in chart["admins"]:
-                        chart["admins"].remove(str(user.id))
-                        save_file_buffer(
-                                file_path, serialize_alignment_chart(chart)
-                        )
-
-                await interaction.response.send_message(
-                        f"{user.display_name} is no longer an alignment admin.",
-                        ephemeral=True,
+                await self._save(
+                        interaction.guild, remove_admin(chart, str(user.id))
                 )
-
-
-if __name__ == "__main__":
-        print("hello")
+                await _reply(
+                        interaction,
+                        f"{user.display_name} is no longer an alignment admin.",
+                )

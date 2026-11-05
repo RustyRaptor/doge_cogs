@@ -6,8 +6,25 @@ Red-DiscordBot cogs for dogebot.
 
 | Cog | What it does |
 |---|---|
-| `doge_alignment` | Alignment chart manager |
+| `doge_alignment` | A server's D&D alignment chart, with slash commands ([TODO](doge_alignment/TODO.md)) |
 | `watch` | Preload a movie or episodes into the home lab's media cache before you watch |
+
+## doge_alignment
+
+Slash commands for a 3x3 D&D alignment chart per server. Enable them with `[p]slash enable <command>` and
+`[p]slash sync`.
+
+| Command | |
+|---|---|
+| `/alignment_show` | the chart, grouped by alignment |
+| `/alignment_set` | put yourself on the chart |
+| `/alignment_set_other [target]` | place someone who isn't on the chart yet; alignment admins can move anyone |
+| `/alignment_remove` | take yourself off |
+| `/alignment_add_admin`, `/alignment_remove_admin` | server owner, bot owner or alignment admins only |
+
+Charts are stored in Red's Config. The rules live in `doge_alignment/chart.py` as pure, tested functions.
+`render.py` holds image helpers for drawing the chart, which isn't wired up yet. Missing features are in
+[doge_alignment/TODO.md](doge_alignment/TODO.md).
 
 ## watch
 
@@ -47,7 +64,8 @@ mise run check             # ruff, ty and pytest for the watch cog
 ## Development
 
 mise installs uv, and uv installs Python 3.11 (what Red 3.5 needs) and the dependencies, including the
-generated client in editable mode. Lint and type checks cover the `watch` cog and its tests.
+generated client in editable mode. ruff (the lptn settings), ty and pytest cover both cogs. Each cog folder is
+self-contained, so Red's Downloader installs it without installing this repo as a package.
 
 ```sh
 mise install && mise run sync

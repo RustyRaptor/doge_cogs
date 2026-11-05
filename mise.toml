@@ -1,5 +1,4 @@
 # Dev tools and tasks. Python and its dependencies are managed by uv.
-# Lint and type checks cover the watch cog; doge_alignment predates them.
 [tools]
 uv = "0.13"
 
@@ -7,10 +6,10 @@ uv = "0.13"
 run = "uv sync"
 
 [tasks.fmt]
-run = ["uv run ruff format watch tests", "uv run ruff check --fix watch tests"]
+run = ["uv run ruff format doge_alignment watch tests", "uv run ruff check --fix doge_alignment watch tests"]
 
 [tasks.lint]
-run = ["uv run ruff format --check watch tests", "uv run ruff check watch tests"]
+run = ["uv run ruff format --check doge_alignment watch tests", "uv run ruff check doge_alignment watch tests"]
 
 [tasks.typecheck]
 run = "uv run ty check"

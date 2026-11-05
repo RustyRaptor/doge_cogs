@@ -8,9 +8,9 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "discord>=2.3.2",
-    "pyyaml>=6.0.2",
-    "red-discordbot>=3.5.20",
+    # The Red that dogebot runs; cogs get discord.py, PyYAML etc. from it
+    "red-discordbot==3.5.24",
+    # doge_alignment/render.py (chart image, not wired up yet; needs ImageMagick)
     "wand>=0.6.13",
 ]
 
@@ -26,6 +26,11 @@ dev = [
     "ty>=0.0.97",
 ]
 
+[tool.uv]
+# A collection of Red cogs, not an installable package: Red's Downloader
+# installs each cog folder (and its info.json requirements) on its own.
+package = false
+
 [tool.uv.sources]
 media-preload-client = { path = "clients/media-preload-client", editable = true }
 
@@ -35,12 +40,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.ty.src]
-# The watch cog and its tests; doge_alignment predates the type checking
-include = ["watch", "tests"]
+include = ["doge_alignment", "watch", "tests"]
 
-[build-system]
-requires = ["uv_build>=0.7.13,<0.8"]
-build-backend = "uv_build"
 
 [tool.ruff]
 exclude = [
