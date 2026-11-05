@@ -1,36 +1,36 @@
 # doge_alignment: TODO
 
-Missing features and known gaps, roughly in priority order. The cleanup of 2026-11-05 already fixed the bugs
-listed at the end.
+## Next
 
-## Features
+1. **Guess alignments from messages (bonus).** Pass someone's most recent 35 messages to a locally hosted
+   model (an LLM, or a smaller text classifier) and suggest an alignment for them.
+   - Core: a pure `guess` module that turns messages into a prompt and parses the model's answer with
+     `parse_alignment`, plus a model client behind a small protocol, so the cog, the command line or a web
+     app can use any backend (llama.cpp's OpenAI-compatible API on porygon is the obvious first one).
+   - Cog: `alignment guess [member]`, reading the history only in channels the bot and the invoker can both
+     see. The result is a suggestion with an "Apply" button, which follows the usual `may_set` rules.
+   - Privacy: say in the data statement that messages are sent to the model and not stored. Probably let
+     members opt out.
+2. Let members suggest an alignment for someone else, applied when that person or an alignment admin
+   accepts.
+3. Custom charts per server: other axes or labels than lawful/chaotic and good/evil. `layout.Theme` already
+   takes the cell colours; labels and axes would need to come from the chart.
+4. Emoji and non-Latin names render as boxes with DejaVu Sans. Fall back to Noto fonts (Noto Color Emoji
+   needs ImageMagick built with color-font support).
 
-1. **Draw the chart as an image.** This was the original goal: a 3x3 grid with a labelled cell per
-   alignment, filled with members' avatars. `render.py` has the building blocks (backgrounds, a grid layout,
-   round or rounded avatars with borders), but nothing composes them or sends the result yet.
-   - Decide on the image library first. Wand needs ImageMagick, which dogebot's Red container doesn't have.
-     Either add `libmagickwand` to `dogebot/containers/red/Containerfile` and `Wand` to `info.json`, or
-     port `render.py` to Pillow, which needs no system library.
-   - Download avatars with Red's aiohttp session, cache them briefly, and fall back to the default avatar.
-   - Show it from `/alignment_show`, perhaps with a `text` option for the current list.
-2. **Use live names and avatars.** The chart stores each member's display name and avatar URL from when the
-   alignment was set, and both go stale. Look the member up when showing the chart, and keep the stored
-   copy only for members who have left.
-3. **Group the slash commands** under one `/alignment` group (`set`, `show`, `remove`, `admin add`,
-   `admin remove`, `admin list`) instead of six top-level commands. Merge `alignment_set` and
-   `alignment_set_other`, since the second already covers the first.
-4. **List the admins:** `/alignment admin list`. There's no way to see who they are today.
-5. **Clear a chart** (alignment admins): wipe the chart, keeping the admins, with a confirmation button.
-6. **Members who leave:** take them off the chart on `on_member_remove`, or show them greyed out.
-7. **Recognise Red's admin and mod roles** (`bot.is_admin` and `bot.is_mod`) as alignment admins, so each
-   server doesn't have to set up its own list.
-8. **Text commands** (`[p]alignment …`) for servers that haven't enabled slash commands. Today the cog only
-   works after `[p]slash enable` for each command and a `[p]slash sync`.
-9. **Export and import** a chart as YAML, the format the cog used before it moved to Config, for backups and
-   for moving between servers.
-10. Ideas, not commitments:
-    - let members suggest an alignment for someone else, applied when that person or an admin accepts;
-    - custom charts per server (other axes or labels than lawful/chaotic and good/evil).
+## Done on 2026-11-05
+
+- The chart is drawn as an image: one 3x3 picture (`alignment image`), or nine pictures in Discord's media
+  gallery (`alignment gallery`), which Discord lays out as three rows of three. Avatars are cut into circles.
+- Names and avatars are looked up live. People who left are greyed out and struck through, and
+  `alignment prune` takes them off.
+- One `alignment` command group, both as text commands and as `/alignment` slash commands. `set` covers
+  setting your own alignment and someone else's.
+- `alignment admin list`, `alignment clear` (with a confirmation button), `alignment style`.
+- Red's admin and mod roles, server Administrators and the server owner always count as alignment admins.
+- YAML export and import, in the format the old cog used.
+- The logic moved into `core/`, which doesn't import Discord or Red, with `python -m doge_alignment` as a
+  second front end.
 
 ## Fixed in the 2026-11-05 cleanup
 

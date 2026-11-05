@@ -1,41 +1,94 @@
-"""The image helpers for the (future) chart picture."""
+"""Painting with ImageMagick (skipped where Wand can't load it)."""
 
-from typing import get_args
+import io
 
 import pytest
+from alignment_helpers import chart_with
 
-pytest.importorskip("wand.image", reason="needs ImageMagick")
+from doge_alignment.core.images import sniff
+from doge_alignment.core.layout import Theme
+from doge_alignment.core.view import Profile, cells
 
-from doge_alignment.render import (  # noqa: E402
-        BorderShape,
-        grid_positions,
-        process_avatar,
-        solid_color_background,
+render = pytest.importorskip(
+        "doge_alignment.core.render", reason="needs ImageMagick"
 )
+wand_image = pytest.importorskip("wand.image")
+wand_color = pytest.importorskip("wand.color")
 
 
-def test_grid_positions_fill_rows_of_three() -> None:
-        """Cells go left to right, then down, with gaps between them."""
-        assert grid_positions(4, (100, 50), gap=10) == [
-                (0, 0),
-                (110, 0),
-                (220, 0),
-                (0, 60),
-        ]
+def png(color: str, width: int = 40, height: int = 30) -> bytes:
+        """Return a solid PNG."""
+        with wand_image.Image(
+                width=width, height=height, background=wand_color.Color(color)
+        ) as img:
+                img.format = "png"
+                return bytes(img.make_blob())
 
 
-@pytest.mark.parametrize("shape", get_args(BorderShape))
-def test_process_avatar_size_and_border(shape: BorderShape) -> None:
-        """Avatars are resized, shaped and bordered on a copy."""
-        with solid_color_background(300, 200, "blue") as original:
-                out = process_avatar(original, (64, 64), 4, "green", shape)
-                assert out.size == (72, 72)
-                assert original.size == (300, 200)
+def load(data: bytes):  # noqa: ANN201 (Wand is untyped)
+        """Open PNG bytes."""
+        return wand_image.Image(blob=data, format="png")
 
 
-def test_circle_has_transparent_corners() -> None:
-        """Outside the circle is see-through, inside is not."""
-        with solid_color_background(64, 64, "red") as img:
-                out = process_avatar(img, (64, 64), 0, "black", "circle")
-                assert out[0, 0].alpha == 0
-                assert out[32, 32].alpha == 1
+def test_sniff() -> None:
+        """Only the four avatar formats are recognised."""
+        assert sniff(png("red")) == "png"
+        assert sniff(b"\xff\xd8\xff\xe0rest") == "jpeg"
+        assert sniff(b"GIF89a...") == "gif"
+        assert sniff(b"RIFF\0\0\0\0WEBPVP8 ") == "webp"
+        assert sniff(b"<svg xmlns=...>") is None
+
+
+def test_avatar_disc_is_round() -> None:
+        """Corners are transparent, the middle is the avatar."""
+        theme = Theme()
+        with render.avatar_disc(
+                png("red", 300, 200),
+                64,
+                present=True,
+                fallback_text="?",
+                theme=theme,
+        ) as disc:
+                assert disc.size == (64, 64)
+                assert disc[0, 0].alpha == 0
+                assert disc[63, 63].alpha == 0
+                middle = disc[32, 32]
+                assert middle.red > 0.9
+                assert middle.green < 0.1
+
+
+def test_absent_people_are_grey() -> None:
+        """Someone who left is drawn without colour."""
+        with render.avatar_disc(
+                png("red"), 64, present=False, fallback_text="?", theme=Theme()
+        ) as disc:
+                middle = disc[32, 32]
+                assert middle.red == pytest.approx(middle.green, abs=0.02)
+
+
+def test_bad_bytes_fall_back_to_placeholder() -> None:
+        """Non-images (here an SVG) are never decoded."""
+        theme = Theme()
+        with render.avatar_disc(
+                b"<svg/>", 64, present=True, fallback_text="A", theme=theme
+        ) as disc:
+                assert disc[32, 4].alpha == 1
+
+
+def test_render_chart_and_tiles() -> None:
+        """One square PNG for the chart, nine for the tiles."""
+        chart = chart_with(("1", "Lawful Good"), ("2", "Chaotic Evil"))
+        chart_cells = cells(chart, {"1": Profile("one")}.get)
+        avatars = {"1": png("blue")}
+        theme = Theme()
+        with load(render.render_chart(chart_cells, avatars, theme)) as img:
+                side = 2 * theme.margin + 3 * theme.cell_size + 2 * theme.gap
+                assert img.size == (side, side)
+        tiles = render.render_tiles(chart_cells, avatars, theme)
+        assert len(tiles) == 9
+        with load(tiles[0]) as tile:
+                assert tile.size == (theme.tile_size, theme.tile_size)
+                # Tiles are the cell colour edge to edge
+                corner = tile[0, 0]
+                assert (corner.red, corner.green, corner.blue) != (0, 0, 0)
+        assert all(io.BytesIO(t).read(8) == b"\x89PNG\r\n\x1a\n" for t in tiles)

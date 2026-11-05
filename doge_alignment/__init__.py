@@ -1,17 +1,26 @@
-"""Red cog: a server's D&D alignment chart."""
+"""Red cog: a server's D&D alignment chart.
 
-from redbot.core.bot import Red
+The cog itself (:mod:`.cog`) is a thin Discord front end on :mod:`.core`, which
+knows nothing about Discord. Red is only imported when Red loads the cog, so
+``doge_alignment.core`` and the command line (``python -m doge_alignment``)
+work without it.
+"""
 
-from .doge_alignment import AlignmentCog
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+        from redbot.core.bot import Red
 
 __red_end_user_data_statement__ = (
         "This cog stores your alignment, display name and avatar URL "
         "for each server's chart, and whether you are an alignment admin "
-        "there. `/alignment_remove` takes you off a chart; Red's data "
+        "there. `/alignment remove` takes you off a chart; Red's data "
         "deletion removes you everywhere."
 )
 
 
-async def setup(bot: Red) -> None:
+async def setup(bot: "Red") -> None:
         """Red's entry point."""
+        from .cog import AlignmentCog  # noqa: PLC0415 (keep Red out of core)
+
         await bot.add_cog(AlignmentCog(bot))

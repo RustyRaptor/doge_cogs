@@ -6,25 +6,54 @@ Red-DiscordBot cogs for dogebot.
 
 | Cog | What it does |
 |---|---|
-| `doge_alignment` | A server's D&D alignment chart, with slash commands ([TODO](doge_alignment/TODO.md)) |
+| `doge_alignment` | A server's D&D alignment chart, drawn with members' avatars ([TODO](doge_alignment/TODO.md)) |
 | `watch` | Preload a movie or episodes into the home lab's media cache before you watch |
 
 ## doge_alignment
 
-Slash commands for a 3x3 D&D alignment chart per server. Enable them with `[p]slash enable <command>` and
-`[p]slash sync`.
+A 3x3 D&D alignment chart per server, drawn with members' avatars cut into circles. Every command works as
+`[p]alignment …` and, once enabled (`[p]slash enable alignment`, `[p]slash sync`), as `/alignment …`.
 
 | Command | |
 |---|---|
-| `/alignment_show` | the chart, grouped by alignment |
-| `/alignment_set` | put yourself on the chart |
-| `/alignment_set_other [target]` | place someone who isn't on the chart yet; alignment admins can move anyone |
-| `/alignment_remove` | take yourself off |
-| `/alignment_add_admin`, `/alignment_remove_admin` | server owner, bot owner or alignment admins only |
+| `alignment [image\|gallery\|text]` (`/alignment show`) | the chart: one picture, nine pictures in Discord's 3x3 media gallery, or text |
+| `alignment set <alignment> [member]` | put yourself on the chart, or someone who isn't on it yet; admins can move anyone. Takes `chaotic good`, `CG`, `neutral`, … |
+| `alignment remove [user]` | take yourself off; admins can take anyone off |
+| `alignment prune` | admins: take off everyone who has left the server (until then they show greyed out) |
+| `alignment clear` | admins: take everyone off, after a confirmation |
+| `alignment style <image\|gallery\|text>` | admins: how the chart shows by default |
+| `alignment export` / `alignment import <file>` | the chart as YAML; admins can import, which replaces everyone |
+| `alignment admin add\|remove\|list` | alignment admins, who may move anyone |
 
-Charts are stored in Red's Config. The rules live in `doge_alignment/chart.py` as pure, tested functions.
-`render.py` holds image helpers for drawing the chart, which isn't wired up yet. Missing features are in
-[doge_alignment/TODO.md](doge_alignment/TODO.md).
+Admins are the alignment admins plus, always, the server owner, members with Administrator, Red's admin and
+mod roles, and the bot owner. Names and avatars are looked up live; people who left keep the ones saved when
+they were placed. Pictures need ImageMagick (`libmagickwand`) on the bot's host; without it, `alignment` falls
+back to text.
+
+### Layout of the code
+
+The cog is a thin Discord front end on `doge_alignment/core`, which imports neither discord.py nor Red (a test
+checks), so a command-line tool or web app can reuse all of it:
+
+| Module | |
+|---|---|
+| `core/alignments.py` | the nine alignments, their grid positions, parsing `CG`/`chaotic-good` |
+| `core/chart.py` | the immutable `Chart` and pure operations: place, remove, clear, admins, permission rules |
+| `core/storage.py` | to and from plain data (Red's Config) and YAML |
+| `core/view.py` | the nine cells to show, with live names and who has left |
+| `core/layout.py` | pure geometry: where each label, avatar and name goes |
+| `core/render.py` | paints a layout with ImageMagick (Wand); the only stateful drawing code |
+| `core/fetch.py` | downloads avatars (HTTPS only, size-limited, image formats only) |
+| `cog.py`, `ui.py` | Red Config, permissions, commands, the gallery and confirm views |
+| `cli.py` | the second front end, below |
+
+```sh
+python -m doge_alignment text chart.yaml               # from `alignment export`
+python -m doge_alignment image chart.yaml -o chart.png
+python -m doge_alignment tiles chart.yaml -o tiles/    # nine PNGs
+```
+
+Planned work is in [doge_alignment/TODO.md](doge_alignment/TODO.md).
 
 ## watch
 

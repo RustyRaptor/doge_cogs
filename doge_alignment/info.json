@@ -6,15 +6,18 @@
     ],
     "install_msg": "YES FUCK YEAH WE INSTALLED THIS SHIT.",
     "name": "doge_alignment",
-    "short": "D&D alignment chart for your server",
-    "requirements": [],
-    "description": "Slash commands to put yourself (and others) on a server's 3x3 D&D alignment chart, with alignment admins who can move anyone.",
+    "short": "D&D alignment chart for your server, drawn with members' avatars",
+    "requirements": [
+        "Wand>=0.6.13"
+    ],
+    "description": "A 3x3 D&D alignment chart per server, drawn as one picture or as a gallery of nine, with members' avatars. Slash and text commands (`alignment`), alignment admins, YAML export and import. Needs ImageMagick (libmagickwand) on the bot's host for pictures; without it the chart is shown as text.",
     "tags": [
         "fun",
         "alignment",
-        "dnd"
+        "dnd",
+        "image"
     ],
-    "end_user_data_statement": "This cog stores your alignment, display name and avatar URL for each server's chart, and whether you are an alignment admin there. /alignment_remove takes you off a chart; Red's data deletion removes you everywhere.",
+    "end_user_data_statement": "This cog stores your alignment, display name and avatar URL for each server's chart, and whether you are an alignment admin there. `alignment remove` takes you off a chart; Red's data deletion removes you everywhere.",
     "min_bot_version": "3.5.0",
     "min_python_version": [
         3,

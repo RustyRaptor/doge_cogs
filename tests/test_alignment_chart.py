@@ -1,150 +1,112 @@
-"""The alignment chart's rules, as pure functions."""
+"""The chart's rules: immutable updates and permissions."""
+
+import dataclasses
 
 import pytest
+from alignment_helpers import chart_with
 
-from doge_alignment.chart import (
-        ALIGNMENTS,
-        AlignmentChart,
+from doge_alignment.core.chart import (
+        Entry,
         add_admin,
-        as_alignment,
+        clear,
         empty_chart,
         forget_user,
-        format_chart,
-        may_manage_admins,
+        make_chart,
+        may_manage,
+        may_remove,
         may_set,
-        normalize_chart,
+        place,
         remove_admin,
-        remove_user_alignment,
-        set_user_alignment,
+        replace_users,
+        unplace,
+        unplace_all,
 )
 
 
-def chart_with(
-        *users: tuple[str, str], admins: tuple[str, ...] = ()
-) -> AlignmentChart:
-        """Return a chart with ``(user id, alignment)`` pairs on it."""
-        chart = empty_chart()
-        for user_id, alignment in users:
-                chart = set_user_alignment(
-                        chart,
-                        user_id,
-                        as_alignment(alignment),
-                        f"user{user_id}",
-                )
-        for admin in admins:
-                chart = add_admin(chart, admin)
-        return chart
+def test_place_returns_new_chart_and_keeps_admins() -> None:
+        """Placing someone neither mutates nor drops the admin list."""
+        before = chart_with(("1", "Lawful Good"), admins=("9",))
+        after = place(before, "2", Entry("Chaotic Evil", "two"))
+        assert set(before.users) == {"1"}
+        assert set(after.users) == {"1", "2"}
+        assert after.admins == ("9",)
 
 
-def test_nine_alignments_in_chart_order() -> None:
-        """The chart is the classic 3x3, good row first."""
-        assert len(ALIGNMENTS) == 9
-        assert ALIGNMENTS[0] == "Lawful Good"
-        assert ALIGNMENTS[4] == "True Neutral"
-        assert ALIGNMENTS[-1] == "Chaotic Evil"
+def test_charts_are_immutable() -> None:
+        """Neither the chart nor its user mapping can be changed in place."""
+        chart = chart_with(("1", "Lawful Good"))
+        with pytest.raises(dataclasses.FrozenInstanceError):
+                chart.admins = ("x",)  # ty: ignore[invalid-assignment]
+        with pytest.raises(TypeError):
+                chart.users["2"] = Entry("True Neutral", "x")  # ty: ignore[invalid-assignment]
 
 
-def test_set_keeps_admins_and_original() -> None:
-        """Regression: setting an alignment used to drop the admin list."""
-        chart = chart_with(admins=("1",))
-        updated = set_user_alignment(chart, "2", "Lawful Good", "Tester")
-        assert updated["admins"] == ["1"]
-        assert updated["users"]["2"]["alignment"] == "Lawful Good"
-        assert chart["users"] == {}
-
-
-def test_remove_keeps_admins_and_original() -> None:
-        """Regression: removing an alignment used to drop the admin list."""
-        chart = chart_with(("2", "Chaotic Evil"), admins=("1",))
-        updated = remove_user_alignment(chart, "2")
-        assert updated == {"users": {}, "admins": ["1"]}
-        assert "2" in chart["users"]
-
-
-def test_admins_are_unique_and_removable() -> None:
-        """Adding twice keeps one entry; removing a non-admin is harmless."""
-        chart = add_admin(add_admin(empty_chart(), "1"), "1")
-        assert chart["admins"] == ["1"]
-        assert remove_admin(chart, "1")["admins"] == []
-        assert remove_admin(chart, "9")["admins"] == ["1"]
-
-
-def test_forget_user_removes_everything() -> None:
-        """Data deletion takes the user off the chart and the admin list."""
+def test_unplace_keeps_admins_and_others() -> None:
+        """Removing one person leaves everyone and everything else."""
         chart = chart_with(
-                ("1", "True Neutral"), ("2", "Lawful Good"), admins=("1",)
+                ("1", "Lawful Good"), ("2", "True Neutral"), admins=("1",)
         )
-        assert forget_user(chart, "1") == {
-                "users": {"2": chart["users"]["2"]},
-                "admins": [],
-        }
+        after = unplace(chart, "1")
+        assert set(after.users) == {"2"}
+        assert after.admins == ("1",)
+        assert unplace(after, "404") == after
 
 
-@pytest.mark.parametrize(
-        ("invoker", "target", "privileged", "allowed"),
-        [
-                ("1", "1", False, True),  # yourself, even if already set
-                ("1", "3", False, True),  # someone not on the chart yet
-                ("1", "2", False, False),  # someone already on it
-                ("9", "2", False, True),  # ...unless you're an alignment admin
-                ("1", "2", True, True),  # ...or the bot owner
-        ],
-)
-def test_may_set(
-        invoker: str, target: str, *, privileged: bool, allowed: bool
-) -> None:
-        """Only admins can move people who are already on the chart."""
+def test_unplace_all_and_clear() -> None:
+        """Bulk removal, and clearing, keep the admins."""
         chart = chart_with(
-                ("1", "Lawful Good"), ("2", "Chaotic Evil"), admins=("9",)
-        )
-        assert may_set(chart, invoker, target, privileged=privileged) is allowed
-
-
-def test_may_manage_admins() -> None:
-        """Admins and privileged users manage admins; nobody else."""
-        chart = chart_with(admins=("9",))
-        assert may_manage_admins(chart, "9", privileged=False)
-        assert may_manage_admins(chart, "1", privileged=True)
-        assert not may_manage_admins(chart, "1", privileged=False)
-
-
-def test_format_chart_in_chart_order() -> None:
-        """Rows follow the chart, names are sorted, empty cells are skipped."""
-        chart = chart_with(
-                ("2", "Chaotic Evil"),
                 ("1", "Lawful Good"),
-                ("3", "Lawful Good"),
+                ("2", "True Neutral"),
+                ("3", "Chaotic Evil"),
+                admins=("5",),
         )
-        assert format_chart(chart) == (
-                "**Lawful Good**: user1, user3\n**Chaotic Evil**: user2"
-        )
-        with pytest.raises(ValueError, match="empty"):
-                format_chart(empty_chart())
+        assert set(unplace_all(chart, ("1", "3")).users) == {"2"}
+        cleared = clear(chart)
+        assert not cleared.users
+        assert cleared.admins == ("5",)
 
 
-def test_normalize_chart_repairs_stored_data() -> None:
-        """Missing keys, int ids and unknown alignments are cleaned up."""
-        assert normalize_chart(None) == empty_chart()
-        assert normalize_chart({"users": None}) == empty_chart()
-        chart = normalize_chart(
-                {
-                        "users": {
-                                1: {
-                                        "alignment": "Lawful Good",
-                                        "display_name": "a",
-                                        "avatar_url": None,
-                                },
-                                2: {"alignment": "Lawful Awesome"},
-                        },
-                        "admins": [5],
-                }
-        )
-        assert list(chart["users"]) == ["1"]
-        assert chart["admins"] == ["5"]
+def test_admins_are_unique_and_ordered() -> None:
+        """Adding an admin twice keeps one entry; removing is idempotent."""
+        chart = add_admin(add_admin(add_admin(empty_chart(), "a"), "b"), "a")
+        assert chart.admins == ("a", "b")
+        assert remove_admin(remove_admin(chart, "a"), "a").admins == ("b",)
+        assert make_chart(admins=["x", "x", "y"]).admins == ("x", "y")
 
 
-def test_as_alignment_rejects_others() -> None:
-        """Only the nine alignments are accepted."""
-        assert as_alignment("True Neutral") == "True Neutral"
-        with pytest.raises(ValueError, match="not an alignment"):
-                as_alignment("Lawful Awesome")
+def test_forget_user_removes_every_trace() -> None:
+        """Data deletion takes the user off the chart and the admin list."""
+        chart = chart_with(("1", "Lawful Good"), ("2", "Lawful Evil"))
+        after = forget_user(add_admin(chart, "1"), "1")
+        assert set(after.users) == {"2"}
+        assert after.admins == ()
+
+
+def test_replace_users_keeps_own_admins() -> None:
+        """Importing a chart brings its people, not its admins."""
+        ours = chart_with(("1", "Lawful Good"), admins=("a",))
+        theirs = chart_with(("2", "Chaotic Good"), admins=("b",))
+        merged = replace_users(ours, theirs)
+        assert set(merged.users) == {"2"}
+        assert merged.admins == ("a",)
+
+
+def test_may_set_rules() -> None:
+        """Self and newcomers are free; moving others needs a manager."""
+        chart = chart_with(("1", "Lawful Good"), admins=("9",))
+        assert may_set(chart, "1", "1", privileged=False)
+        assert may_set(chart, "2", "3", privileged=False)
+        assert not may_set(chart, "2", "1", privileged=False)
+        assert may_set(chart, "9", "1", privileged=False)
+        assert may_set(chart, "2", "1", privileged=True)
+
+
+def test_may_remove_and_manage() -> None:
+        """Anyone may leave; removing others and managing need privileges."""
+        chart = chart_with(("1", "Lawful Good"), admins=("9",))
+        assert may_remove(chart, "1", "1", privileged=False)
+        assert not may_remove(chart, "2", "1", privileged=False)
+        assert may_remove(chart, "9", "1", privileged=False)
+        assert may_manage(chart, "9", privileged=False)
+        assert not may_manage(chart, "2", privileged=False)
+        assert may_manage(chart, "2", privileged=True)
