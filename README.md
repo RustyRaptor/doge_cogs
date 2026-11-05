@@ -20,7 +20,7 @@ A 3x3 D&D alignment chart per server, drawn with members' avatars cut into circl
 | `alignment set <cell> [member]` | put yourself on the chart, or someone who isn't on it yet; admins can move anyone. Takes the server's labels, `CG`, `neutral`, … |
 | `alignment suggest <member> <cell>` | suggest where someone belongs; they get Accept/Reject buttons (they still work after a restart) |
 | `alignment suggestions [member]`, `accept <who>`, `reject <who>` | list and answer suggestions by command (`who` is a mention or `guess`) |
-| `alignment guess [member]` | a local language model reads 35 messages picked at random from the person's whole history (in channels you can both see) and suggests a cell; takes about 40 seconds |
+| `alignment guess [member]` | a local language model reads conversations from random points in the person's whole history (in channels you can both see), their activity pattern and their profile picture, and suggests a cell; takes 1.5-2 minutes |
 | `alignment guessing <true\|false>` | allow or block guesses from your messages |
 | `alignment remove [user]` | take yourself off; admins can take anyone off |
 | `alignment prune` | admins: take off everyone who has left the server (until then they show greyed out) |
@@ -40,11 +40,29 @@ ImageMagick's Pango coder (Debian: `libmagickcore-6.q16-6-extra`) text falls bac
 names with emoji (with `fonts-noto-color-emoji`) and other scripts render. All text going to Pango is escaped
 for both Pango markup and ImageMagick's own `%`/`\`/`@` escapes, since names are untrusted.
 
-Messages for guesses come from Discord's guild message search, which reaches the whole history: the cog
-reads 8 random pages of the person's messages (past the search's 10,000-result offset limit too) and keeps 5
-random messages with text from each, then picks 35. Search allows only about one request per 5 seconds, so
-this takes about 40 seconds; reading single random messages instead took over two minutes. Thread messages
-aren't included. Without search access the cog falls back to scanning recent channel history.
+How a guess works (`core/sampling.py`, `gather.py`, `core/conversations.py`, `core/activity.py`,
+`core/dossier.py`, `core/guess.py`):
+
+1. Discord's guild message search finds the person's whole history in channels the asker and the bot can both
+   read, and random pages of it are fetched (past the 10,000-result offset limit too). The page count follows the
+   token budget: about 25 pages for 32k tokens.
+2. Around a couple of their messages per page, the channel history gives the conversation they were in. A
+   person's quick consecutive messages are merged into one turn; a 20-minute lull starts a new conversation;
+   replies stay with what they answer. Others are anonymised as A, B, …, and anyone who blocked guesses is shown
+   as hidden. Bots are left out.
+3. An activity profile: posting rate between the sampled pages over the years and how steady it is, busiest
+   UTC hours, late-night and weekend shares, burstiness, typical run length, message length, and style (links,
+   caps, emoji, questions, replies…).
+4. The profile picture: its main colours (ImageMagick) and a short description from the model's vision.
+5. Conversations are packed into the budget round-robin across pages (so the whole history is covered) and
+   sent oldest first. Discord markup is tidied first (custom emoji keep their name, links their site, mentions
+   become labels): raw Discord text ran at 1.6 characters per token, tidied at about 2.4.
+
+The system prompt asks for a fair, candid judgement: patterns over single jokes, no default cell, activity and
+avatar as hints only, nothing about protected traits, and a reason that's a friendly roast in good taste.
+`ALIGNMENT_CONTEXT_TOKENS` (default 32,000; Qwen3.5-9B allows 131,072 on yveltal) sets the budget. On yveltal's
+GTX 1080 + 1060 the model reads about 400-600 tokens/s, so a 32k guess takes around 1.5-2 minutes in all; the
+message shows progress meanwhile.
 
 Guessing needs an OpenAI-compatible chat server (llama.cpp, Ollama, vLLM): `ALIGNMENT_MODEL_URL` (and
 `ALIGNMENT_MODEL_NAME`, `ALIGNMENT_MODEL_KEY`) in the bot's environment, or `[p]set api alignment_model
@@ -63,13 +81,18 @@ checks), so a command-line tool or web app can reuse all of it:
 | `core/storage.py` | to and from plain data (Red's Config) and YAML |
 | `core/spec.py` | custom charts: title, axis names, per-cell labels and colours, parsing cells by label |
 | `core/suggestions.py` | suggesting a cell for someone, accepting and rejecting |
-| `core/guess.py` | the model prompt, its JSON schema, reading the answer, and the one HTTP call |
+| `core/sampling.py` | random pages from a whole message history, a few dozen search requests at most |
+| `core/messages.py`, `core/conversations.py` | messages, merged turns, conversations, anonymised transcripts |
+| `core/activity.py` | posting rate over time, rhythm, burstiness and style |
+| `core/colors.py` | naming an avatar's palette |
+| `core/dossier.py` | assembling what the model is told |
+| `core/guess.py` | the prompt, packing to a token budget, the JSON schema, and the HTTP calls |
 | `core/view.py` | the nine cells to show, with labels, live names and who has left |
 | `core/layout.py` | pure geometry: where each label, avatar and name goes |
 | `core/markup.py` | Pango markup, escaped for Pango and ImageMagick |
 | `core/render.py` | paints a layout with ImageMagick (Wand); the only stateful drawing code |
 | `core/fetch.py` | downloads avatars (HTTPS only, size-limited, image formats only) |
-| `cog.py`, `ui.py` | Red Config, permissions, commands, the gallery and confirm views |
+| `cog.py`, `ui.py`, `gather.py` | Red Config, permissions, commands, views, and fetching history for guesses |
 | `cli.py` | the second front end, below |
 
 ```sh

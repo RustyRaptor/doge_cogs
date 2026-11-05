@@ -9,14 +9,18 @@
    Red image (fonts-noto-cjk is large).
 3. Measure Pango text instead of estimating its width, so names are cut only when they really don't fit.
 
-4. Guess sampling: cache the sampled pool per person for an hour so repeat guesses are instant, and include
+4. Guess sampling: cache the dossier per person for an hour so repeat guesses are instant, and include
    thread messages (search filtered by parent channel ids leaves them out).
+5. Know people's time zones (aikaterna's timezone cog stores them) so the activity profile can say "posts at
+   3am" instead of in UTC.
 
 ## Done on 2026-11-05 (second round)
 
 - `alignment suggest`, `suggestions`, `accept`, `reject`, with Accept/Reject buttons that survive restarts.
 - Custom charts: `alignment chart title|columns|rows|label|color|reset`, in pictures, text, parsing,
   autocomplete, YAML export/import.
+- Guesses read whole conversations (merged bursts, time-gap conversations, anonymised), an activity profile,
+  and the avatar's description and palette, packed to a token budget (default 32k); new, more candid prompt.
 - `alignment guess` samples 35 messages from the whole history (Discord's guild search, random pages, past
   the 10,000 offset limit) instead of the last 35.
 - `alignment guess` with a local model (constrained to the chart's labels, becomes a suggestion) and

@@ -7,10 +7,10 @@ all live in :mod:`.core`.
 """
 
 import asyncio
+import contextlib
 import io
 import logging
 import os
-import random
 import re
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -18,7 +18,6 @@ from typing import Literal
 
 import aiohttp
 import discord
-from discord.http import Route
 from redbot.core import Config, app_commands, commands
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import pagify
@@ -40,22 +39,19 @@ from .core.chart import (
         unplace_all,
         with_spec,
 )
+from .core.colors import describe_palette
+from .core.dossier import build_dossier
 from .core.fetch import avatar_urls, by_user, fetch_images
 from .core.guess import (
-        MAX_MESSAGES,
+        DEFAULT_CONTEXT,
         MIN_MESSAGES,
         ModelConfig,
         ModelError,
         ask,
         build_prompt,
-        clean_messages,
-)
-from .core.sampling import (
-        PAGE_SIZE,
-        FetchPage,
-        Found,
-        choose,
-        sample_history,
+        describe_avatar,
+        estimate_tokens,
+        pages_for,
 )
 from .core.spec import (
         ChartSpec,
@@ -99,6 +95,7 @@ from .core.view import (
         format_text,
         tile_filename,
 )
+from .gather import Gatherer
 from .ui import AnswerButton, ConfirmView, Verb, answer_view, gallery_view
 
 log = logging.getLogger("red.doge_cogs.doge_alignment")
@@ -109,18 +106,6 @@ Person = discord.User | discord.Member
 
 AVATAR_CACHE_SIZE = 512
 MAX_IMPORT_BYTES = 1024 * 1024
-# Fallback when search isn't available: scan these channels' history
-GUESS_CHANNELS = 8
-GUESS_HISTORY = 200
-# Discord's search takes at most this many channel ids
-SEARCH_CHANNELS = 500
-# Random pages of someone's history to read, and messages kept from each.
-# Discord limits search to about one request per 5 seconds (a shared limit,
-# on top of the bot's own), so 8 pages take roughly 40 seconds.
-SAMPLE_PAGES = 8
-PER_PAGE = 5
-# Search returns code 110000 while it indexes a server; retry this often
-SEARCH_RETRIES = 3
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -198,9 +183,10 @@ def model_config(
 ) -> ModelConfig | None:
         """Return the guessing model's settings, or None if unset.
 
-        From ``ALIGNMENT_MODEL_URL``/``_NAME``/``_KEY``/``_REASONING``, else
-        Red's shared API tokens ``alignment_model`` (``url``, ``model``,
-        ``key``, ``reasoning``).
+        From ``ALIGNMENT_MODEL_URL``/``_NAME``/``_KEY``/``_REASONING`` and
+        ``ALIGNMENT_CONTEXT_TOKENS``, else Red's shared API tokens
+        ``alignment_model`` (``url``, ``model``, ``key``, ``reasoning``,
+        ``context``).
         """
         url = env.get("ALIGNMENT_MODEL_URL") or tokens.get("url")
         if not url:
@@ -216,39 +202,12 @@ def model_config(
                 api_key=env.get("ALIGNMENT_MODEL_KEY") or tokens.get("key"),
                 # "none" turns thinking off on reasoning models (Ollama)
                 extra={"reasoning_effort": reasoning} if reasoning else {},
+                context_tokens=int(
+                        env.get("ALIGNMENT_CONTEXT_TOKENS")
+                        or tokens.get("context")
+                        or DEFAULT_CONTEXT
+                ),
         )
-
-
-def readable_by(channel: discord.TextChannel, *members: discord.Member) -> bool:
-        """Whether all ``members`` can read ``channel``'s history."""
-        return all(
-                channel.permissions_for(m).read_message_history
-                and channel.permissions_for(m).view_channel
-                for m in members
-        )
-
-
-def found_from_search(body: Mapping[str, object]) -> tuple[Found, ...]:
-        """Read a search page: hit groups whose first message is the match."""
-        groups = body.get("messages")
-        if not isinstance(groups, list):
-                return ()
-        return tuple(
-                Found(
-                        str(group[0].get("id", "")),
-                        str(group[0].get("content") or ""),
-                )
-                for group in groups
-                if isinstance(group, list)
-                and group
-                and isinstance(group[0], dict)
-        )
-
-
-def total_from_search(body: Mapping[str, object]) -> int:
-        """Return how many messages the search matched."""
-        total = body.get("total_results")
-        return total if isinstance(total, int) else 0
 
 
 class AlignmentCog(commands.Cog):
@@ -916,127 +875,6 @@ class AlignmentCog(commands.Cog):
                 tokens = await self.bot.get_shared_api_tokens("alignment_model")
                 return model_config(os.environ, tokens)
 
-        def _guess_channels(
-                self, guild: discord.Guild, viewer: discord.Member
-        ) -> list[discord.TextChannel]:
-                """Text channels both the bot and the viewer can read."""
-                return [
-                        c
-                        for c in guild.text_channels
-                        if readable_by(c, guild.me, viewer)
-                ]
-
-        async def _search(
-                self, guild: discord.Guild, params: list[tuple[str, str]]
-        ) -> dict[str, object]:
-                """Run one guild message search, waiting out indexing."""
-                route = Route(
-                        "GET",
-                        "/guilds/{guild_id}/messages/search",
-                        guild_id=guild.id,
-                )
-                for _ in range(SEARCH_RETRIES):
-                        body = await self.bot.http.request(route, params=params)
-                        # 202 "Index not yet available": same shape, no hits
-                        if body.get("code") != 110000:  # noqa: PLR2004
-                                return body
-                        await asyncio.sleep(
-                                min(float(body.get("retry_after") or 2), 10)
-                        )
-                return {}
-
-        def _search_fetcher(
-                self,
-                guild: discord.Guild,
-                member: discord.Member,
-                channels: list[discord.TextChannel],
-        ) -> FetchPage:
-                base = [
-                        ("author_id", str(member.id)),
-                        ("limit", str(PAGE_SIZE)),
-                        ("sort_by", "timestamp"),
-                        ("sort_order", "desc"),
-                        *(("channel_id", str(c.id)) for c in channels),
-                ]
-
-                async def fetch(
-                        max_id: str | None, offset: int
-                ) -> tuple[Found, ...]:
-                        params = [
-                                *base,
-                                ("offset", str(offset)),
-                                *((("max_id", max_id),) if max_id else ()),
-                        ]
-                        return found_from_search(
-                                await self._search(guild, params)
-                        )
-
-                return fetch
-
-        async def _sample_messages(
-                self,
-                guild: discord.Guild,
-                member: discord.Member,
-                viewer: discord.Member,
-        ) -> tuple[tuple[str, ...], int]:
-                """Return random messages from ``member``'s whole history here.
-
-                Only channels the viewer and the bot can both read count. Uses
-                Discord's message search; without it, falls back to scanning
-                recent channel history. Returns the texts and the pool size.
-                """
-                channels = self._guess_channels(guild, viewer)[:SEARCH_CHANNELS]
-                if not channels:
-                        return (), 0
-                rng = random.SystemRandom()
-                fetch = self._search_fetcher(guild, member, channels)
-                try:
-                        first = await self._search(
-                                guild,
-                                [
-                                        ("author_id", str(member.id)),
-                                        ("limit", "1"),
-                                        *(
-                                                ("channel_id", str(c.id))
-                                                for c in channels
-                                        ),
-                                ],
-                        )
-                        total = total_from_search(first)
-                        found = await sample_history(
-                                fetch, total, SAMPLE_PAGES, PER_PAGE, rng
-                        )
-                except discord.HTTPException as error:
-                        log.info("Message search failed (%s); scanning", error)
-                        found = await self._scan_history(channels, member)
-                        total = len(found)
-                return clean_messages(choose(found, MAX_MESSAGES, rng)), total
-
-        async def _scan_history(
-                self,
-                channels: list[discord.TextChannel],
-                member: discord.Member,
-        ) -> tuple[Found, ...]:
-                """Fallback: ``member``'s messages in recent channel history."""
-                busiest = sorted(
-                        channels,
-                        key=lambda c: c.last_message_id or 0,
-                        reverse=True,
-                )[:GUESS_CHANNELS]
-                found: list[Found] = []
-                for channel in busiest:
-                        try:
-                                found += [
-                                        Found(str(m.id), m.content)
-                                        async for m in channel.history(
-                                                limit=GUESS_HISTORY
-                                        )
-                                        if m.author.id == member.id
-                                ]
-                        except discord.HTTPException:
-                                continue
-                return tuple(found)
-
         @alignment.command(name="guess")
         @commands.cooldown(1, 30, commands.BucketType.user)
         @app_commands.describe(
@@ -1049,9 +887,9 @@ class AlignmentCog(commands.Cog):
         ) -> None:
                 """Let a local model guess an alignment from your messages.
 
-                It reads 35 messages picked at random from the person's whole
-                history in channels you can see, and its pick becomes a
-                suggestion to accept or reject.
+                It reads conversations from random points in the person's
+                whole history (in channels you can see), their activity and
+                their profile picture; its pick becomes a suggestion.
                 """
                 guild = ctx.guild
                 target = member or ctx.author
@@ -1089,37 +927,108 @@ class AlignmentCog(commands.Cog):
                 viewer: discord.Member,
                 config: ModelConfig,
         ) -> None:
-                async with ctx.typing():
-                        messages, total = await self._sample_messages(
-                                guild, target, viewer
+                status = await ctx.send(
+                        f"Reading {target.display_name}'s history…",
+                        allowed_mentions=NO_MENTIONS,
+                )
+
+                async def progress(text: str) -> None:
+                        with contextlib.suppress(discord.HTTPException):
+                                await status.edit(content=text)
+
+                chart = await self._load(guild)
+                gatherer = Gatherer(self.bot, guild)
+                try:
+                        history = await gatherer.history(
+                                target,
+                                viewer,
+                                pages_for(config.context_tokens),
+                                progress,
                         )
-                if len(messages) < MIN_MESSAGES:
-                        await ctx.send(
-                                f"I found only {len(messages)} messages with "
-                                f"text from {target.display_name} in channels "
-                                f"you can see; I need {MIN_MESSAGES}.",
-                                allowed_mentions=NO_MENTIONS,
+                except discord.HTTPException as error:
+                        log.info("Message search failed (%s); scanning", error)
+                        history = await gatherer.scan(target, viewer)
+                own = sum(len(p.items) for p in history.pages)
+                if own < MIN_MESSAGES:
+                        await progress(
+                                f"I found only {own} messages from "
+                                f"{target.display_name} in channels you can "
+                                f"see; I need {MIN_MESSAGES}."
                         )
                         return
-                chart = await self._load(guild)
-                prompt = build_prompt(target.display_name, messages, chart.spec)
+                await progress("Looking at their profile picture…")
+                avatar, palette = await self._avatar_notes(target, config)
+                dossier = build_dossier(
+                        name=target.display_name,
+                        target_id=str(target.id),
+                        pages=history.pages,
+                        contexts=history.contexts,
+                        total=history.total,
+                        joined=target.joined_at.date()
+                        if target.joined_at
+                        else None,
+                        avatar=avatar,
+                        palette=palette,
+                        hidden=await self._blocked_users(),
+                )
+                prompt = build_prompt(
+                        dossier, chart.spec, config.context_tokens
+                )
+                tokens = sum(estimate_tokens(m["content"]) for m in prompt)
+                await progress(
+                        f"Asking the model ({len(dossier.evidence)} "
+                        f"conversations, about {tokens:,} tokens)…"
+                )
                 try:
                         guessed = await ask(
                                 self._http(), config, prompt, chart.spec
                         )
                 except ModelError as error:
                         log.warning("Alignment guess failed: %s", error)
-                        await ctx.send(f"The model failed: {error}")
+                        await progress(f"The model failed: {error}")
                         return
+                with contextlib.suppress(discord.HTTPException):
+                        await status.delete()
                 reason = f" (“{guessed.reason}”)" if guessed.reason else ""
                 await self._post_suggestion(
                         ctx,
                         chart,
                         Suggestion(str(target.id), GUESS, guessed.alignment),
-                        f"from {len(messages)} messages picked at random from "
-                        f"your {total:,} here, the model thinks you belong in",
+                        f"after reading {len(history.pages)} random stretches "
+                        f"of your {history.total:,} messages here, the model "
+                        "thinks you belong in",
                         reason,
                 )
+
+        async def _blocked_users(self) -> frozenset[str]:
+                """Ids of everyone who blocked guesses (hidden as context)."""
+                users = await self.config.all_users()
+                return frozenset(
+                        str(uid)
+                        for uid, data in users.items()
+                        if data.get("guess_blocked")
+                )
+
+        async def _avatar_notes(
+                self, member: discord.Member, config: ModelConfig
+        ) -> tuple[str, str]:
+                """Describe ``member``'s avatar and its colours, if possible."""
+                try:
+                        png = await member.display_avatar.replace(
+                                format="png", size=256
+                        ).read()
+                except discord.HTTPException:
+                        return "", ""
+                try:
+                        from .core import render  # noqa: PLC0415
+                except ImportError:
+                        colours = ""
+                else:
+                        colours = describe_palette(
+                                await asyncio.to_thread(render.palette, png)
+                        )
+                description = await describe_avatar(self._http(), config, png)
+                return description, colours
 
         @alignment.command(name="guessing")
         @app_commands.describe(allow="Whether the model may guess for you")

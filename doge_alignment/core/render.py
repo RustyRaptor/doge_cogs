@@ -278,3 +278,39 @@ def render_tiles(
                 paint(plan_tile(cell, square), avatars, square)
                 for cell in chart_cells
         )
+
+
+def palette(data: bytes, count: int = 5) -> tuple[tuple[str, float], ...]:
+        """Return an image's ``count`` main colours and their shares.
+
+        Colours are ``#rrggbb``, most common first; see-through pixels don't
+        count. Returns () for anything that isn't a decodable image.
+        """
+        image = _decode(data)
+        if image is None:
+                return ()
+        with image:
+                image.transform(resize="64x64>")
+                image.quantize(
+                        number_colors=count,
+                        colorspace_type="srgb",
+                        treedepth=0,
+                        dither=False,
+                        measure_error=False,
+                )
+                counts = {
+                        color: n
+                        for color, n in image.histogram.items()
+                        if color.alpha > 0.5  # noqa: PLR2004
+                }
+        total = sum(counts.values())
+        if not total:
+                return ()
+        ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+        return tuple(
+                (
+                        f"#{c.red_int8:02x}{c.green_int8:02x}{c.blue_int8:02x}",
+                        n / total,
+                )
+                for c, n in ranked
+        )

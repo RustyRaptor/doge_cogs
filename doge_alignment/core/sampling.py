@@ -20,10 +20,23 @@ import random
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from itertools import groupby
+from typing import Generic, Protocol, TypeVar
 
 PAGE_SIZE = 25
 MAX_OFFSET = 9975
 WINDOW = MAX_OFFSET + PAGE_SIZE
+
+
+class HasId(Protocol):
+        """Anything with a Discord id (a message)."""
+
+        @property
+        def id(self) -> str:
+                """The id."""
+                ...
+
+
+Item = TypeVar("Item", bound=HasId)
 
 
 @dataclass(frozen=True)
@@ -32,6 +45,14 @@ class Found:
 
         id: str
         content: str
+
+
+@dataclass(frozen=True)
+class SampledPage(Generic[Item]):
+        """A fetched page and where it starts in the history (0 = newest)."""
+
+        position: int
+        items: tuple[Item, ...]
 
 
 @dataclass(frozen=True)
@@ -45,7 +66,7 @@ class PageRequest:
 
 # Fetch the page at ``offset`` of the search restarted before ``max_id``
 # (None for the newest window); returns that page, newest first.
-FetchPage = Callable[[str | None, int], Awaitable[Sequence[Found]]]
+FetchPage = Callable[[str | None, int], Awaitable[Sequence[Item]]]
 
 
 def sample_positions(
@@ -86,7 +107,7 @@ def choose(
 
 
 async def _window_starts(
-        fetch: FetchPage, windows: int
+        fetch: FetchPage[Item], windows: int
 ) -> dict[int, str | None]:
         """Return ``max_id`` for each window up to ``windows``.
 
@@ -102,18 +123,17 @@ async def _window_starts(
         return starts
 
 
-async def sample_history(
-        fetch: FetchPage,
+async def sample_pages(
+        fetch: FetchPage[Item],
         total: int,
         pages: int,
-        per_page: int,
         rng: random.Random,
-) -> tuple[Found, ...]:
-        """Fetch ``pages`` random pages; keep ``per_page`` usable from each.
+) -> tuple[SampledPage[Item], ...]:
+        """Fetch ``pages`` pages drawn uniformly from the whole history.
 
-        Pages are drawn uniformly from the whole history (all of it, past
-        the offset limit too). Within a page, messages without text don't
-        count, and ``per_page`` of the rest are picked at random.
+        Reaches past the offset limit too. Pages are returned newest first,
+        each with its position, so callers can tell when in the history
+        each one is.
         """
         page_count = -(-total // PAGE_SIZE)
         starts = sample_positions(page_count, pages, rng)
@@ -121,11 +141,32 @@ async def sample_history(
         if not requests:
                 return ()
         windows = await _window_starts(fetch, max(r.window for r in requests))
-        found: list[Found] = []
+        result: list[SampledPage[Item]] = []
         for request in requests:
                 if request.window not in windows:
                         continue
                 page = await fetch(windows[request.window], request.offset)
-                texts = [f for f in page if usable(f)]
+                if page:
+                        result.append(
+                                SampledPage(
+                                        request.window * WINDOW
+                                        + request.offset,
+                                        tuple(page),
+                                )
+                        )
+        return tuple(result)
+
+
+async def sample_history(
+        fetch: FetchPage[Found],
+        total: int,
+        pages: int,
+        per_page: int,
+        rng: random.Random,
+) -> tuple[Found, ...]:
+        """Fetch random pages; keep ``per_page`` usable messages from each."""
+        found: list[Found] = []
+        for page in await sample_pages(fetch, total, pages, rng):
+                texts = [f for f in page.items if usable(f)]
                 found += rng.sample(texts, min(per_page, len(texts)))
         return tuple(found)
