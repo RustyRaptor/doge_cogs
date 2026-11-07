@@ -71,3 +71,16 @@ def test_anchor_ids_one_per_stretch() -> None:
         picked = anchor_ids(page, "me", random.Random(1), count=2)
         assert len(picked) == 2  # noqa: PLR2004
         assert {m.channel_id for m in picked} == {"c1", "c2"}
+
+
+def test_fresh_skips_messages_already_seen() -> None:
+        """Overlapping server pages don't count a message twice."""
+        from alignment_messages import msg  # noqa: PLC0415
+
+        from doge_alignment.gather import fresh  # noqa: PLC0415
+
+        seen: set[str] = set()
+        first = fresh((msg(1), msg(2)), seen)
+        second = fresh((msg(2), msg(3)), seen)
+        assert [m.id for m in first] == ["1001", "1002"]
+        assert [m.id for m in second] == ["1003"]

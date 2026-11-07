@@ -182,3 +182,59 @@ async def test_describe_avatar(server: BaseTestServer) -> None:
                         )
                         == ""
                 )
+
+
+def test_relative_prompt_only_with_a_server_baseline() -> None:
+        """With a baseline the model judges against the server."""
+        from doge_alignment.core.guess import (  # noqa: PLC0415
+                Dossier,
+                build_prompt,
+        )
+
+        plain = build_prompt(Dossier(name="Sam"), ChartSpec())
+        assert "against this server" not in plain[0]["content"]
+        assert "## This server" not in plain[1]["content"]
+        rich = build_prompt(
+                Dossier(
+                        name="Sam",
+                        server="Messages in this server: 9",
+                        comparison="Messages in all caps: 90%",
+                        profile="Roles: Mods",
+                ),
+                ChartSpec(),
+        )
+        assert "Judge Sam against this server" in rich[0]["content"]
+        body = rich[1]["content"]
+        assert body.index("## This server") < body.index("Person:")
+        assert body.index("## Profile") < body.index("## Compared with")
+
+
+def test_notes_come_first_in_the_schema() -> None:
+        """Notes are asked for before the cell, and parse away."""
+        from doge_alignment.core.guess import (  # noqa: PLC0415
+                answer_schema,
+                request_body,
+                system_prompt,
+        )
+
+        schema = answer_schema(ChartSpec(), notes=True)
+        assert schema["required"] == ["notes", "alignment", "reason"]
+        properties = schema["properties"]
+        assert isinstance(properties, dict)
+        assert next(iter(properties)) == "notes"
+        assert answer_schema(ChartSpec())["required"] == [
+                "alignment",
+                "reason",
+        ]
+        assert '"notes"' in system_prompt("Sam", ChartSpec(), notes=True)
+        assert '"notes"' not in system_prompt("Sam", ChartSpec())
+        body = request_body(
+                ModelConfig("http://m"), [], ChartSpec(), notes=True
+        )
+        assert body["max_tokens"] == 700
+        guess = parse_answer(
+                '{"notes": "n", "alignment": "Lawful Good", "reason": "r"}',
+                ChartSpec(),
+        )
+        assert guess is not None
+        assert guess.alignment == "Lawful Good"

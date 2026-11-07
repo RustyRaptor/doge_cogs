@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, date, tzinfo
 
 from .activity import Anchor, activity, describe
+from .baseline import Baseline, compare, describe_baseline, traits
 from .conversations import conversations_with, render_segment
 from .guess import Dossier, Evidence
 from .messages import Message
@@ -72,13 +73,22 @@ def build_dossier(  # noqa: PLR0913 (it gathers everything)
         palette: str = "",
         hidden: frozenset[str] = frozenset(),
         tz: tzinfo = UTC,
+        baseline: Baseline | None = None,
+        profile: str = "",
 ) -> Dossier:
         """Return the dossier for ``name`` from the fetched pages.
 
         Times in the activity profile and transcripts are local to ``tz``.
+        With a ``baseline``, the dossier describes the server and sets the
+        person's numbers against its regulars.
         """
         own = [m for page in pages for m in page.items]
         return Dossier(
+                server=describe_baseline(baseline) if baseline else "",
+                comparison=compare(traits(own, tz), total, baseline)
+                if baseline
+                else "",
+                profile=profile,
                 name=name,
                 activity=describe(
                         activity(own, anchors(pages), total, joined, tz)
@@ -87,3 +97,32 @@ def build_dossier(  # noqa: PLR0913 (it gathers everything)
                 palette=palette,
                 evidence=evidence(pages, contexts, target_id, name, hidden, tz),
         )
+
+
+MAX_ROLES = 15
+MAX_STATUS = 128
+
+
+def describe_profile(
+        *,
+        username: str,
+        display_name: str,
+        status: str = "",
+        roles: Sequence[str] = (),
+) -> str:
+        """Return what someone's server profile shows, as short lines.
+
+        Discord doesn't give bots the "About me" bio, so a custom status,
+        a nickname and the roles people picked are the nearest thing.
+        """
+        flat = " ".join(status.split())[:MAX_STATUS]
+        lines = [
+                *(
+                        [f"Username: {username}; goes by {display_name} here"]
+                        if display_name and display_name != username
+                        else []
+                ),
+                *([f"Custom status: {flat}"] if flat else []),
+                *([f"Roles: {', '.join(roles[:MAX_ROLES])}"] if roles else []),
+        ]
+        return "\n".join(lines)

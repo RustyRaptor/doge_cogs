@@ -144,6 +144,7 @@ async def test_slash_commands_are_valid(red: Red) -> None:
                 "accept",
                 "reject",
                 "guess",
+                "baseline",
                 "guessing",
                 "chart",
                 "admin",
@@ -220,3 +221,64 @@ def test_guess_timezone() -> None:
                 guess_timezone({"ALIGNMENT_TIMEZONE": "Asia/Tokyo"}, {})
         ) == ("Asia/Tokyo")
         assert guess_timezone({"ALIGNMENT_TIMEZONE": "Mars/Base"}, {}) is UTC
+
+
+def test_zone_or_and_baseline_switch() -> None:
+        """Unknown or missing zones fall back; the baseline can be off."""
+        from datetime import UTC  # noqa: PLC0415
+
+        from doge_alignment.cog import baseline_enabled, zone_or  # noqa: PLC0415
+
+        assert str(zone_or("Asia/Tokyo", UTC)) == "Asia/Tokyo"
+        assert zone_or(None, UTC) is UTC
+        assert zone_or("Not/AZone", UTC) is UTC
+        assert zone_or(5, UTC) is UTC
+        assert baseline_enabled({}, {})
+        assert not baseline_enabled({"ALIGNMENT_BASELINE": "off"}, {})
+        assert not baseline_enabled({}, {"baseline": "False"})
+
+
+async def test_timezone_from_the_timezone_cog(cog: AlignmentCog) -> None:
+        """A zone set with aikaterna's timezone cog wins over the default."""
+        from datetime import UTC  # noqa: PLC0415
+
+        zones = Config(
+                cog_name="Timezone",
+                unique_identifier="278049241001",
+                driver=cog.config._driver,
+        )
+        cog.zones = zones
+        await zones.user_from_id(5).set_raw("usertime", value="Asia/Tokyo")
+        person = cast("discord.User", SimpleNamespace(id=5))
+        nobody = cast("discord.User", SimpleNamespace(id=6))
+        assert str(await cog._timezone(person, UTC)) == "Asia/Tokyo"
+        assert await cog._timezone(nobody, UTC) is UTC
+
+
+def test_profile_text_skips_default_and_bot_roles() -> None:
+        """Roles come highest first, without @everyone or managed ones."""
+        from doge_alignment.cog import profile_text  # noqa: PLC0415
+
+        def role(
+                name: str, *, default: bool = False, managed: bool = False
+        ) -> SimpleNamespace:
+                return SimpleNamespace(
+                        name=name,
+                        is_default=lambda: default,
+                        managed=managed,
+                )
+
+        member = SimpleNamespace(
+                name="sam",
+                display_name="Sammy",
+                activities=(discord.CustomActivity("brb"),),
+                roles=[
+                        role("@everyone", default=True),
+                        role("Gamers"),
+                        role("SomeBot", managed=True),
+                        role("Mods"),
+                ],
+        )
+        text = profile_text(cast("discord.Member", member))
+        assert "Custom status: brb" in text
+        assert "Roles: Mods, Gamers" in text

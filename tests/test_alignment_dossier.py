@@ -117,3 +117,55 @@ def test_palette_names() -> None:
         assert describe_palette(
                 [("#ff0000", 0.5), ("#dd1133", 0.2), ("#ffffff", 0.3)]
         ) == ("red 70%, white 30%")
+
+
+def test_describe_profile() -> None:
+        """Nickname only when it differs; status flattened; roles listed."""
+        from doge_alignment.core.dossier import describe_profile  # noqa: PLC0415
+
+        text = describe_profile(
+                username="sam",
+                display_name="Sammy",
+                status="  out   touching grass ",
+                roles=["Mods", "Gamers"],
+        )
+        assert text.splitlines() == [
+                "Username: sam; goes by Sammy here",
+                "Custom status: out touching grass",
+                "Roles: Mods, Gamers",
+        ]
+        assert describe_profile(username="sam", display_name="sam") == ""
+
+
+def test_build_dossier_with_baseline() -> None:
+        """A baseline adds the server profile and the comparison."""
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from doge_alignment.core.baseline import build_baseline  # noqa: PLC0415
+
+        others = [msg(50 + i, "other", i, "hi") for i in range(10)]
+        base = build_baseline(
+                others, 1_000, built=datetime(2026, 1, 1, tzinfo=UTC)
+        )
+        dossier = build_dossier(
+                name="Me",
+                target_id="me",
+                pages=pages(),
+                contexts={},
+                total=100,
+                baseline=base,
+                profile="Roles: Mods",
+        )
+        assert dossier.server.startswith("Messages in this server: 1,000")
+        assert "Share of all messages here: 10.0%" in dossier.comparison
+        assert dossier.profile == "Roles: Mods"
+        assert (
+                build_dossier(
+                        name="Me",
+                        target_id="me",
+                        pages=pages(),
+                        contexts={},
+                        total=1,
+                ).server
+                == ""
+        )

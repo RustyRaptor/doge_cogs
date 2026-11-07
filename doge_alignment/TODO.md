@@ -11,8 +11,18 @@
 
 4. Guess sampling: cache the dossier per person for an hour so repeat guesses are instant, and include
    thread messages (search filtered by parent channel ids leaves them out).
-5. Per-person time zones from aikaterna's timezone cog (it stores each user's zone). For now everyone is
-   assumed to be in Mountain Time (`ALIGNMENT_TIMEZONE`, default `America/Denver`).
+5. Guesses still land on Chaotic Neutral most of the time, and the 9B model's per-axis scores don't repeat
+   (see `scripts/experiments/README.md`). Ideas to try, cheapest first: thinking on (with a bigger
+   `max_tokens`); several samples and a vote (re-asks hit Ollama's prompt cache and take 5-8 s); a map-reduce
+   prompt that first lists concrete behaviours per conversation, then judges from the counts; a bigger model
+   (Qwen3.5-35B-A3B with experts on the CPU).
+
+## Done on 2026-11-06
+
+- Server baseline (`core/baseline.py`, `alignment baseline`): guesses see what's normal on the server and how
+  the person compares with its regulars. Experiment results in `scripts/experiments/README.md`.
+- Each person's own time zone from aikaterna's timezone cog; Mountain Time otherwise.
+- Nickname, custom status and roles in the dossier (bots can't read the "About me" bio).
 
 ## Done on 2026-11-05 (second round)
 

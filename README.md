@@ -22,6 +22,7 @@ A 3x3 D&D alignment chart per server, drawn with members' avatars cut into circl
 | `alignment suggestions [member]`, `accept <who>`, `reject <who>` | list and answer suggestions by command (`who` is a mention or `guess`) |
 | `alignment guess [member]` | a local language model reads conversations from random points in the person's whole history (in channels you can both see), their activity pattern and their profile picture, and suggests a cell; takes 1.5-2 minutes |
 | `alignment guessing <true\|false>` | allow or block guesses from your messages |
+| `alignment baseline` | (chart admins) rebuild and show what guesses treat as normal on this server |
 | `alignment remove [user]` | take yourself off; admins can take anyone off |
 | `alignment prune` | admins: take off everyone who has left the server (until then they show greyed out) |
 | `alignment clear` | admins: take everyone off, after a confirmation |
@@ -53,16 +54,29 @@ How a guess works (`core/sampling.py`, `gather.py`, `core/conversations.py`, `co
 3. An activity profile: posting rate between the sampled pages over the years and how steady it is, busiest
    hours, late-night and weekend shares, burstiness, typical run length, message length, and style (links,
    caps, emoji, questions, replies…).
-4. The profile picture: its main colours (ImageMagick) and a short description from the model's vision.
-5. Conversations are packed into the budget round-robin across pages (so the whole history is covered) and
+4. The profile picture: its main colours (ImageMagick) and a short description from the model's vision; the
+   nickname, custom status and roles. Discord doesn't give bots the "About me" bio (`/users/{id}/profile` answers
+   403 to bots), so these are the nearest thing.
+5. The server baseline (`core/baseline.py`): judged on their own, nearly everyone came out Chaotic Neutral,
+   because Discord chat is jokey and irregular everywhere. So guesses also get what's normal on this server and
+   where the person sits among its regulars. The baseline samples 24 random moments across the server's life in
+   its public channels (one search each, plus the conversation around one message), keeps per-regular style
+   numbers (anyone with 8+ sampled messages; no names or ids) and each author's share of messages, and asks the
+   model for a 150-word summary of the culture from the anonymised conversations. It's cached in Config for a
+   week; `alignment baseline` rebuilds it. The prompt then asks the model to judge relative to the server and
+   spread people out. `ALIGNMENT_BASELINE=off` (or the `baseline` API token) turns it off.
+   In a first experiment it helped only a little (Chaotic Neutral 9/10 → 8/10); see
+   `scripts/experiments/README.md`.
+6. Conversations are packed into the budget round-robin across pages (so the whole history is covered) and
    sent oldest first. Discord markup is tidied first (custom emoji keep their name, links their site, mentions
    become labels): raw Discord text ran at 1.6 characters per token, tidied at about 2.4.
 
 The system prompt asks for a fair, candid judgement: patterns over single jokes, no default cell, activity and
 avatar as hints only, nothing about protected traits, and a reason that's a friendly roast in good taste.
-Times (busiest hours, late night, weekends, transcript headers) are in Mountain Time (`America/Denver`, MST/MDT)
-for everyone for now; `ALIGNMENT_TIMEZONE` or the `timezone` key of the `alignment_model` API tokens changes it.
-Per-person zones from the timezone cog are on the TODO list.
+Times (busiest hours, late night, weekends, transcript headers) are in the person's own zone if they set one
+with aikaterna's timezone cog (`[p]time me <zone>`; read from its Config, so it works even if that cog is
+unloaded), and otherwise in Mountain Time (`America/Denver`, MST/MDT). `ALIGNMENT_TIMEZONE` or the `timezone` key
+of the `alignment_model` API tokens changes the default; the server baseline uses the default.
 
 `ALIGNMENT_CONTEXT_TOKENS` (default 32,000; Qwen3.5-9B allows 131,072 on yveltal) sets the budget. On yveltal's
 GTX 1080 + 1060 the model reads about 400-600 tokens/s, so a 32k guess takes around 1.5-2 minutes in all; the
@@ -71,7 +85,7 @@ message shows progress meanwhile.
 Guessing needs an OpenAI-compatible chat server (llama.cpp, Ollama, vLLM): `ALIGNMENT_MODEL_URL` (and
 `ALIGNMENT_MODEL_NAME`, `ALIGNMENT_MODEL_KEY`) in the bot's environment, or `[p]set api alignment_model
 url,<url> model,<name>`. The answer is constrained by a JSON schema to the chart's own nine labels and only
-ever becomes a suggestion. dogebot runs Qwen2.5-7B-Instruct on a GTX 1080 for it.
+ever becomes a suggestion. dogebot uses Qwen3.5-9B on yveltal's Ollama (GTX 1080 + 1060), with thinking off (`ALIGNMENT_MODEL_REASONING=none`).
 
 ### Layout of the code
 
@@ -88,6 +102,7 @@ checks), so a command-line tool or web app can reuse all of it:
 | `core/sampling.py` | random pages from a whole message history, a few dozen search requests at most |
 | `core/messages.py`, `core/conversations.py` | messages, merged turns, conversations, anonymised transcripts |
 | `core/activity.py` | posting rate over time, rhythm, burstiness and style |
+| `core/baseline.py` | the server baseline: regulars' numbers, comparison, the culture summary |
 | `core/colors.py` | naming an avatar's palette |
 | `core/dossier.py` | assembling what the model is told |
 | `core/guess.py` | the prompt, packing to a token budget, the JSON schema, and the HTTP calls |

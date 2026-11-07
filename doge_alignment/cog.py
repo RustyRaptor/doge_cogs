@@ -13,8 +13,8 @@ import logging
 import os
 import re
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
-from datetime import UTC, tzinfo
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime, tzinfo
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,6 +25,16 @@ from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import pagify
 
 from .core.alignments import ALIGNMENTS, AlignmentName
+from .core.baseline import (
+        Baseline,
+        build_baseline,
+        culture_evidence,
+        describe_baseline,
+        is_stale,
+        summarise_culture,
+)
+from .core.baseline import from_data as baseline_from_data
+from .core.baseline import to_data as baseline_to_data
 from .core.chart import (
         Chart,
         Entry,
@@ -42,7 +52,7 @@ from .core.chart import (
         with_spec,
 )
 from .core.colors import describe_palette
-from .core.dossier import build_dossier
+from .core.dossier import build_dossier, describe_profile
 from .core.fetch import avatar_urls, by_user, fetch_images
 from .core.guess import (
         DEFAULT_CONTEXT,
@@ -180,23 +190,72 @@ def spec_summary(spec: ChartSpec) -> str:
         )
 
 
-# Until per-person zones come from the timezone cog, everyone is assumed to
-# be here (ALIGNMENT_TIMEZONE overrides)
+# Everyone without a zone set in the timezone cog is assumed to be here
+# (ALIGNMENT_TIMEZONE overrides)
 DEFAULT_TIMEZONE = "America/Denver"
+# aikaterna's timezone cog: Config identifier and its per-user key
+TIMEZONE_COG = ("Timezone", 278049241001, "usertime")
+# Random moments sampled across the server for its baseline
+BASELINE_PAGES = 24
+# Sampled messages below which a server has no usable baseline
+MIN_BASELINE = 100
+
+
+def zone_or(name: object, fallback: tzinfo) -> tzinfo:
+        """Return the IANA zone called ``name``, or ``fallback``."""
+        if not isinstance(name, str) or not name:
+                return fallback
+        try:
+                return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+                log.warning("Unknown time zone %r; using %s", name, fallback)
+                return fallback
 
 
 def guess_timezone(env: Mapping[str, str], tokens: Mapping[str, str]) -> tzinfo:
-        """Return the time zone guesses use; UTC if the name is unknown.
+        """Return the default time zone for guesses; UTC if unknown.
 
         From ``ALIGNMENT_TIMEZONE``, else the ``alignment_model`` API
         token ``timezone``, else Mountain Time.
         """
         name = env.get("ALIGNMENT_TIMEZONE") or tokens.get("timezone")
-        try:
-                return ZoneInfo(name or DEFAULT_TIMEZONE)
-        except (ZoneInfoNotFoundError, ValueError):
-                log.warning("Unknown time zone %r; using UTC", name)
-                return UTC
+        return zone_or(name or DEFAULT_TIMEZONE, UTC)
+
+
+def baseline_enabled(env: Mapping[str, str], tokens: Mapping[str, str]) -> bool:
+        """Whether guesses compare people with a server baseline.
+
+        On unless ``ALIGNMENT_BASELINE`` (or the ``baseline`` API token)
+        is ``off``, ``no``, ``false`` or ``0``.
+        """
+        value = env.get("ALIGNMENT_BASELINE") or tokens.get("baseline") or ""
+        return value.strip().casefold() not in {"off", "no", "false", "0"}
+
+
+def custom_status(member: discord.Member) -> str:
+        """Return ``member``'s custom status text, if the bot can see it."""
+        return next(
+                (
+                        a.name or ""
+                        for a in member.activities
+                        if isinstance(a, discord.CustomActivity)
+                ),
+                "",
+        )
+
+
+def profile_text(member: discord.Member) -> str:
+        """Describe ``member``'s profile: nickname, status and roles."""
+        return describe_profile(
+                username=member.name,
+                display_name=member.display_name,
+                status=custom_status(member),
+                roles=[
+                        r.name
+                        for r in reversed(member.roles)
+                        if not r.is_default() and not r.managed
+                ],
+        )
 
 
 def model_config(
@@ -246,9 +305,17 @@ class AlignmentCog(commands.Cog):
                         suggestions={},
                         spec={},
                         default_style="image",
+                        baseline={},
                 )
                 self.config.register_user(guess_blocked=False)
+                name, identifier, _key = TIMEZONE_COG
+                # The timezone cog's own settings, read whether it's loaded
+                # or not
+                self.zones = Config.get_conf(
+                        None, identifier=identifier, cog_name=name
+                )
                 self._locks: dict[int, asyncio.Lock] = {}
+                self._baseline_locks: dict[int, asyncio.Lock] = {}
                 self._avatars: OrderedDict[str, bytes] = OrderedDict()
                 self._session: aiohttp.ClientSession | None = None
 
@@ -977,6 +1044,13 @@ class AlignmentCog(commands.Cog):
                                 f"see; I need {MIN_MESSAGES}."
                         )
                         return
+                tokens = await self.bot.get_shared_api_tokens("alignment_model")
+                default_zone = guess_timezone(os.environ, tokens)
+                baseline = (
+                        await self._baseline(guild, config, progress)
+                        if baseline_enabled(os.environ, tokens)
+                        else None
+                )
                 await progress("Looking at their profile picture…")
                 avatar, palette = await self._avatar_notes(target, config)
                 dossier = build_dossier(
@@ -991,12 +1065,9 @@ class AlignmentCog(commands.Cog):
                         avatar=avatar,
                         palette=palette,
                         hidden=await self._blocked_users(),
-                        tz=guess_timezone(
-                                os.environ,
-                                await self.bot.get_shared_api_tokens(
-                                        "alignment_model"
-                                ),
-                        ),
+                        tz=await self._timezone(target, default_zone),
+                        baseline=baseline,
+                        profile=profile_text(target),
                 )
                 prompt = build_prompt(
                         dossier, chart.spec, config.context_tokens
@@ -1025,6 +1096,121 @@ class AlignmentCog(commands.Cog):
                         f"of your {history.total:,} messages here, the model "
                         "thinks you belong in",
                         reason,
+                )
+
+        async def _timezone(self, user: Person, fallback: tzinfo) -> tzinfo:
+                """Return ``user``'s zone from the timezone cog, or fallback."""
+                key = TIMEZONE_COG[2]
+                try:
+                        name = await self.zones.user(user).get_raw(
+                                key, default=None
+                        )
+                except Exception:  # noqa: BLE001 (another cog's data)
+                        log.debug("Couldn't read %s's time zone", user.id)
+                        return fallback
+                return zone_or(name, fallback)
+
+        async def _baseline(
+                self,
+                guild: discord.Guild,
+                config: ModelConfig,
+                progress: Callable[[str], Awaitable[None]],
+                *,
+                rebuild: bool = False,
+        ) -> Baseline | None:
+                """Return the server's baseline, building it if stale.
+
+                Built from a random sample of the public channels and
+                cached for a week; None if search fails or the server is
+                too quiet.
+                """
+                lock = self._baseline_locks.setdefault(guild.id, asyncio.Lock())
+                async with lock:
+                        group = self.config.guild(guild)
+                        cached = baseline_from_data(await group.baseline())
+                        now = datetime.now(UTC)
+                        if (
+                                cached is not None
+                                and not rebuild
+                                and not is_stale(cached, now)
+                        ):
+                                return cached
+                        tz = guess_timezone(
+                                os.environ,
+                                await self.bot.get_shared_api_tokens(
+                                        "alignment_model"
+                                ),
+                        )
+                        try:
+                                total, groups = await Gatherer(
+                                        self.bot, guild
+                                ).server_sample(BASELINE_PAGES, progress)
+                        except discord.HTTPException as error:
+                                log.info("No server baseline: %s", error)
+                                return cached
+                        hidden = await self._blocked_users()
+                        messages = [
+                                m
+                                for g in groups
+                                for m in g
+                                if m.author_id not in hidden
+                        ]
+                        if len(messages) < MIN_BASELINE:
+                                return cached
+                        await progress("Summing up the server's culture…")
+                        culture = await summarise_culture(
+                                self._http(),
+                                config,
+                                culture_evidence(groups, hidden, tz),
+                        )
+                        baseline = build_baseline(
+                                messages,
+                                total,
+                                built=now,
+                                tz=tz,
+                                culture=culture,
+                        )
+                        await group.baseline.set(baseline_to_data(baseline))
+                        return baseline
+
+        @alignment.command(name="baseline")
+        @commands.cooldown(1, 300, commands.BucketType.guild)
+        async def alignment_baseline(self, ctx: commands.Context) -> None:
+                """Rebuild and show what guesses treat as normal here.
+
+                Guesses compare each person with the server's regulars and a
+                short summary of its culture, rebuilt weekly from a random
+                sample of the public channels.
+                """
+                guild = ctx.guild
+                if guild is None or await self._managed_chart(ctx) is None:
+                        return
+                config = await self._model()
+                if config is None:
+                        await ctx.send("No model is set up.", ephemeral=True)
+                        return
+                await ctx.defer(ephemeral=True)
+                status = await ctx.send(
+                        "Getting to know the server…", ephemeral=True
+                )
+
+                async def progress(text: str) -> None:
+                        with contextlib.suppress(discord.HTTPException):
+                                await status.edit(content=text)
+
+                baseline = await self._baseline(
+                        guild, config, progress, rebuild=True
+                )
+                if baseline is None:
+                        await progress(
+                                "I couldn't build a baseline: message search "
+                                "failed or the public channels are too quiet."
+                        )
+                        return
+                await progress(
+                        f"**What guesses treat as normal here** (built "
+                        f"{baseline.built:%Y-%m-%d}):\n"
+                        + describe_baseline(baseline)[:1800]
                 )
 
         async def _blocked_users(self) -> frozenset[str]:

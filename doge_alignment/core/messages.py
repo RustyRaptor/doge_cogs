@@ -16,6 +16,12 @@ def snowflake_time(snowflake: str | int) -> datetime:
         return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
 
+def snowflake_at(when: datetime) -> int:
+        """Return the smallest Discord id created at ``when``."""
+        ms = int(when.timestamp() * 1000) - DISCORD_EPOCH_MS
+        return max(ms, 0) << 22
+
+
 @dataclass(frozen=True)
 class Message:
         """One chat message."""

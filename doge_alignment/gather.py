@@ -17,14 +17,15 @@ import logging
 import random
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import discord
 from discord.http import Route
 from redbot.core.bot import Red
 
+from .core.baseline import time_points
 from .core.conversations import conversations_with
-from .core.messages import Message, snowflake_time
+from .core.messages import Message, snowflake_at, snowflake_time
 from .core.sampling import PAGE_SIZE, SampledPage, sample_pages
 
 log = logging.getLogger("red.doge_cogs.doge_alignment.gather")
@@ -161,6 +162,24 @@ def shared_channels(
         ][:SEARCH_CHANNELS]
 
 
+def public_channels(guild: discord.Guild) -> list[discord.TextChannel]:
+        """Text channels everyone in the server, and the bot, can read."""
+        return [
+                c
+                for c in guild.text_channels
+                if readable_by(c, guild.me)
+                and c.permissions_for(guild.default_role).view_channel
+                and c.permissions_for(guild.default_role).read_message_history
+        ][:SEARCH_CHANNELS]
+
+
+def fresh(hits: tuple[Message, ...], seen: set[str]) -> tuple[Message, ...]:
+        """Return ``hits`` not in ``seen``, and remember them."""
+        new = tuple(h for h in hits if h.id not in seen)
+        seen.update(h.id for h in new)
+        return new
+
+
 def anchor_ids(
         page: SampledPage[Message],
         target_id: str,
@@ -270,15 +289,71 @@ class Gatherer:
                 """Fetch the conversations around a few messages on ``page``."""
                 found: list[Message] = []
                 for anchor in anchor_ids(page, target_id, rng):
-                        channel = self.guild.get_channel_or_thread(
-                                int(anchor.channel_id)
+                        found += await self.around(anchor)
+                return tuple(found)
+
+        async def server_sample(
+                self, pages: int, progress: Progress
+        ) -> tuple[int, tuple[tuple[Message, ...], ...]]:
+                """Sample the whole server's public channels at random times.
+
+                Returns the server's message count and, for each random
+                moment, the page of messages before it plus the channel
+                conversation around one of them.
+
+                Raises:
+                        discord.HTTPException: if search isn't available.
+
+                """
+                channels = public_channels(self.guild)
+                if not channels:
+                        return 0, ()
+                base = [
+                        ("author_type", "user"),
+                        *(("channel_id", str(c.id)) for c in channels),
+                ]
+                total = total_from_search(
+                        await self.search([*base, ("limit", "1")])
+                )
+                rng = random.SystemRandom()
+                moments = time_points(
+                        self.guild.created_at, datetime.now(UTC), pages, rng
+                )
+                seen: set[str] = set()
+                groups: list[tuple[Message, ...]] = []
+                for done, moment in enumerate(moments, 1):
+                        await progress(
+                                "Getting to know the server "
+                                f"({done} of {pages})…"
                         )
-                        if not isinstance(
-                                channel, discord.TextChannel | discord.Thread
-                        ):
+                        body = await self.search(
+                                [
+                                        *base,
+                                        ("limit", str(PAGE_SIZE)),
+                                        ("sort_by", "timestamp"),
+                                        ("sort_order", "desc"),
+                                        ("max_id", str(snowflake_at(moment))),
+                                ]
+                        )
+                        hits = fresh(search_hits(body, self.names), seen)
+                        if not hits:
                                 continue
-                        try:
-                                found += [
+                        around = await self.around(rng.choice(hits))
+                        groups.append((*hits, *fresh(around, seen)))
+                return total, tuple(groups)
+
+        async def around(self, anchor: Message) -> tuple[Message, ...]:
+                """Fetch the channel's messages around ``anchor``."""
+                channel = self.guild.get_channel_or_thread(
+                        int(anchor.channel_id)
+                )
+                if not isinstance(
+                        channel, discord.TextChannel | discord.Thread
+                ):
+                        return ()
+                try:
+                        return tuple(
+                                [
                                         message_from_discord(m)
                                         async for m in channel.history(
                                                 around=discord.Object(
@@ -287,11 +362,10 @@ class Gatherer:
                                                 limit=CONTEXT_LIMIT,
                                         )
                                 ]
-                        except discord.HTTPException as error:
-                                log.debug(
-                                        "No context in %s: %s", channel, error
-                                )
-                return tuple(found)
+                        )
+                except discord.HTTPException as error:
+                        log.debug("No context in %s: %s", channel, error)
+                        return ()
 
         async def scan(
                 self,

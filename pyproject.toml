@@ -46,6 +46,7 @@ include = ["doge_alignment", "watch", "tests"]
 
 [tool.ruff]
 exclude = [
+    "scripts/experiments",
     ".bzr",
     ".direnv",
     ".eggs",
