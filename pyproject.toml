@@ -12,6 +12,7 @@ dependencies = [
     "red-discordbot==3.5.24",
     # doge_alignment pictures (needs ImageMagick's libmagickwand); keep equal
     # to doge_alignment/info.json, which is what the bot installs
+    "typing-extensions>=4.13.2",
     "wand==0.7.2",
 ]
 
