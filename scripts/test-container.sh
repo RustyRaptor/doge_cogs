@@ -5,12 +5,16 @@
 #
 #   DOGEBOT_HOST       ssh host with the image (default yveltal_local)
 #   DOGEBOT_RED_IMAGE  image to test in (default localhost/dogebot-red:latest)
+#   DOGEBOT_PROXY      HTTPS proxy for pip and uv in the container (default:
+#                      the home lab's VPS proxy, http://10.77.0.1:3128, which
+#                      yveltal reaches over its wg-vps tunnel; empty = none)
 #   extra arguments go to pytest
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 host=${DOGEBOT_HOST:-yveltal_local}
 image=${DOGEBOT_RED_IMAGE:-localhost/dogebot-red:latest}
+proxy=${DOGEBOT_PROXY-http://10.77.0.1:3128}
 
 # The cogs' requirements are installed the way Red's Downloader installs them:
 # `pip install -U -t <lib>` (honouring the image's PIP_CONSTRAINT), with lib
@@ -36,7 +40,8 @@ printf '%s\n' "$test_reqs" | ssh "$host" "cat > $dir/.test-requirements.txt"
 
 # shellcheck disable=SC2029 # $dir and $image expand here on purpose
 ssh "$host" "podman run --rm --entrypoint sh -v $dir:/src:Z -w /src \
-        -e PYTHONDONTWRITEBYTECODE=1 -e DOGE_COGS_LIB=/tmp/lib $image -c '
+        -e PYTHONDONTWRITEBYTECODE=1 -e DOGE_COGS_LIB=/tmp/lib \
+        ${proxy:+-e HTTPS_PROXY=$proxy -e PIP_PROXY=$proxy} $image -c '
         set -e
         constraint=\${PIP_CONSTRAINT:+--constraint \$PIP_CONSTRAINT}
         uv pip install --quiet --python /app/.venv/bin/python \$constraint \\
