@@ -154,10 +154,13 @@ The cog's `info.json` installs it from this repo with pip. To regenerate it afte
 
 ```sh
 mise run generate-client   # fetches the live spec into clients/media-preload.openapi.json and regenerates
-mise run check             # ruff, ty and pytest for the watch cog
+mise run check             # ruff, ty and pytest, here and inside the bot's image
 ```
 
 ## Development
+
+Everything here is built test first: see [TESTING.md](TESTING.md) for the loop, what makes a good test, and
+the test layers (core, cog glue, real HTTP, the bot's image, and the live self-test).
 
 mise installs uv, and uv installs Python 3.11 (what Red 3.5 needs) and the dependencies, including the
 generated client in editable mode. ruff (the lptn settings), ty and pytest cover both cogs. Each cog folder is
@@ -170,7 +173,7 @@ mise run fmt && mise run check
 
 `mise run check` includes `mise run test-container`, which copies this checkout to yveltal and runs the tests
 inside dogebot's Red image (`localhost/dogebot-red:latest`), with the bot's Python, ImageMagick 6, fonts and
-the exact requirements from each `info.json`. The dev machine has ImageMagick 7, and the two differ (an
+the exact requirements from each `info.json`, installed the way Red's Downloader installs them. The dev machine has ImageMagick 7, and the two differ (an
 operator name broke pictures once), so run it before pushing anything that draws. Set `DOGEBOT_HOST` or
 `DOGEBOT_RED_IMAGE` to test elsewhere; extra arguments go to pytest. Keep `wand` in `pyproject.toml` equal to
 `doge_alignment/info.json`. ImageMagick itself is pinned in dogebot's `containers/red/Containerfile`.

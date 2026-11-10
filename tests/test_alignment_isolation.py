@@ -6,19 +6,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Every module of the core, found on disk so new ones are covered too, plus
+# the package itself and the command line front end
 MODULES = (
         "doge_alignment",
         "doge_alignment.cli",
-        "doge_alignment.core.alignments",
-        "doge_alignment.core.chart",
-        "doge_alignment.core.fetch",
-        "doge_alignment.core.layout",
-        "doge_alignment.core.storage",
-        "doge_alignment.core.view",
+        *sorted(
+                f"doge_alignment.core.{p.stem}"
+                for p in (ROOT / "doge_alignment/core").glob("*.py")
+                if p.stem != "__init__"
+        ),
 )
 
 CHECK = f"""
-import importlib, sys
+import importlib, os, sys
+# Cog requirements live in Red's lib folder in the bot image (see conftest)
+if os.environ.get("DOGE_COGS_LIB"):
+    sys.path.append(os.environ["DOGE_COGS_LIB"])
 for name in {MODULES!r}:
     importlib.import_module(name)
 banned = ("discord", "redbot")
@@ -26,6 +30,14 @@ leaked = sorted(m for m in sys.modules if m.split(".")[0] in banned)
 print(leaked)
 sys.exit(1 if leaked else 0)
 """
+
+
+def test_every_core_module_is_checked() -> None:
+        """The list really is discovered: modules added later are in it."""
+        assert {
+                "doge_alignment.core.guess",
+                "doge_alignment.core.render",
+        } <= set(MODULES)
 
 
 def test_core_imports_neither_discord_nor_red() -> None:
