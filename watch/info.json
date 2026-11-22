@@ -1,15 +1,25 @@
 {
-    "author": ["GodEmperorDoge"],
+    "author": [
+        "GodEmperorDoge"
+    ],
     "name": "Watch",
-    "short": "Preload a movie or episodes so they stream fast.",
-    "description": "Ask the home lab's media-preload service to cache a movie, a season, some episodes, or your next unwatched episodes, and follow the download in the channel.",
+    "short": "Preload library media or request a movie/TV download.",
+    "description": "Preload existing library media, or request English movie/TV downloads through ARR with title/quality selection and owner-managed individual permissions.",
     "install_msg": "Set the API token with the PRELOAD_BOT_TOKEN environment variable or `[p]set api media_preload token,<token>` (and url,<url> if it isn't http://host.containers.internal:8125).",
-    "end_user_data_statement": "This cog stores the Jellyfin user name you link with `watch link`, to find your next unwatched episodes. `watch unlink` deletes it.",
+    "end_user_data_statement": "Stores a linked Jellyfin name and an owner-managed per-user download permission. watch unlink removes the name; Red user-data deletion removes both.",
     "requirements": [
         "media-preload-client @ git+https://github.com/RustyRaptor/doge_cogs.git#subdirectory=clients/media-preload-client"
     ],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 11, 0],
-    "tags": ["media", "jellyfin", "webdav"],
+    "min_python_version": [
+        3,
+        11,
+        0
+    ],
+    "tags": [
+        "media",
+        "jellyfin",
+        "webdav"
+    ],
     "type": "COG"
 }

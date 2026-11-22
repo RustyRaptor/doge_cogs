@@ -237,7 +237,13 @@ async def test_watch_explains_when_there_is_nothing_to_preload(
 
         await run_watch(cog, ctx, "Nothing Here")
 
-        assert ctx.texts == [reply]
+        assert ctx.texts == [
+                reply
+                + (
+                        " Request a download with `d!request Nothing "
+                        "Here` (owner permission required)."
+                )
+        ]
         assert fake.calls_to("POST", "/v1/requests") == []
 
 

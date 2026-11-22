@@ -146,6 +146,47 @@ Configuration, read when each command runs:
   `http://host.containers.internal:8125`. That is the host as seen from a rootless podman container. Inside
   such a container the host's LAN address points back at the container itself.
 
+### Request movies and TV downloads
+
+`[p]watch` preloads existing library files. If nothing cacheable matches, it
+points to `[p]request <title>` instead of downloading automatically.
+
+| Command | Purpose |
+|---|---|
+| `[p]request Dune` | Choose Movie/TV, a matching catalogue title/year, then 1080p or 4K |
+| `[p]request allow @person` | Bot owner: grant an individual download permission |
+| `[p]request revoke @person` | Bot owner: remove that permission |
+
+Only Red bot owners (including configured co-owners) may request by default.
+Server administrators/moderators do not receive automatic access. Grants apply
+across servers and are stored per Discord user; Red user-data deletion removes
+them. Revocation is rechecked immediately before submitting to ARR.
+
+Each menu belongs to its requester, includes Cancel, and expires after two
+minutes. Even a single matching title requires explicit selection. Results show
+title/year (up to24 matches); search again with a year to narrow them. The final
+quality choice confirms the request. No ARR add/search happens before that step.
+TV requests include **all regular seasons and future monitored episodes**;
+specials are excluded. Movie requests use released-only availability. Spanish
+libraries and music acquisition are outside this command.
+
+Title lookup uses Radarr/Sonarr's metadata catalogues, rather than exposing raw
+release/torrent names. ARR subsequently searches its configured indexers under
+the chosen quality/custom-format profile. Existing ARR titles are not changed,
+added twice or searched again; inspect the ARR app for their status. A successful
+request means ARR accepted it, not that a matching release was found or imported.
+The existing RDTC download/import/NFO/Jellyfin integration handles subsequent work.
+
+Owner configuration uses Red's shared API-token stores `radarr` and `sonarr`:
+each needs `url` (base URL, without `/api/v3`) and `api_key`. Supply keys through
+a private administrative session, never a public Discord channel or git file.
+The deployed instance uses English Sonarr on Dragapult8969 and Radarr7878.
+Profiles are resolved by name: `Doge - 1080p default` / `Doge - 4K optional`.
+New roots are `/arr/library/TV` and `/arr/library/Movies`. A missing selected
+profile/root stops the request instead of silently selecting another one.
+Raw ARR errors/headers are not sent to Discord. No new service or API endpoint
+is required.
+
 ### The client library
 
 `clients/media-preload-client` is generated from media-preload's OpenAPI spec with

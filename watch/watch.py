@@ -84,6 +84,11 @@ def item_label(item: MediaItem) -> str:
         return f"{item.name}{year} · {item.type_.value}"
 
 
+def catalogue_label(title: dict[str, Any]) -> str:
+        """Distinguish catalogue remakes by title and year."""
+        return f"{title['title']} ({title.get('year', '?')})"
+
+
 class OwnerView(discord.ui.View):
         """A view that only the user who ran the command can use."""
 
@@ -102,6 +107,66 @@ class OwnerView(discord.ui.View):
                         "This isn't your request.", ephemeral=True
                 )
                 return False
+
+
+class DownloadSelect(discord.ui.Select["PickDownloadOption"]):
+        """A single validated step in the acquisition wizard."""
+
+        def __init__(self, options: list[tuple[str, str]]) -> None:
+                """Offer choices plus an explicit cancellation option."""
+                super().__init__(
+                        placeholder="Choose an option",
+                        options=[
+                                discord.SelectOption(
+                                        label=label[:100], value=value
+                                )
+                                for value, label in options
+                        ]
+                        + [
+                                discord.SelectOption(
+                                        label="Cancel", value="cancel"
+                                )
+                        ],
+                )
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+                """Pass a Discord selection back to its view."""
+                if self.view is not None:
+                        await self.view.picked(interaction, self.values[0])
+
+
+class PickDownloadOption(OwnerView):
+        """One requester-owned choice, consumable only once."""
+
+        def __init__(
+                self, author: Person, options: list[tuple[str, str]]
+        ) -> None:
+                """Build the step without any download side effects."""
+                super().__init__(author)
+                self.allowed = {key for key, _ in options} | {"cancel"}
+                self.chosen: str | None = None
+                self.add_item(DownloadSelect(options))
+
+        async def picked(
+                self, interaction: discord.Interaction, value: str
+        ) -> None:
+                """Accept one advertised choice from the requester."""
+                if not await self.interaction_check(interaction):
+                        return
+                if self.is_finished() or value not in self.allowed:
+                        await interaction.response.send_message(
+                                "That choice has expired or is invalid.",
+                                ephemeral=True,
+                        )
+                        return
+                self.chosen = None if value == "cancel" else value
+                self.stop()
+                await interaction.response.edit_message(
+                        content="Cancelled."
+                        if self.chosen is None
+                        else "Selection saved.",
+                        view=None,
+                )
 
 
 class ItemSelect(discord.ui.Select["PickItem"]):
@@ -284,7 +349,10 @@ class Watch(commands.Cog):
                 self.config = Config.get_conf(
                         self, identifier=0x0D06EBA7C4, force_registration=True
                 )
-                self.config.register_user(jellyfin_user=None)
+                self.config.register_user(
+                        jellyfin_user=None, download_allowed=False
+                )
+                self._acquisition_lock = asyncio.Lock()
                 self._pollers: set[asyncio.Task[None]] = set()
 
         async def cog_unload(self) -> None:
@@ -508,10 +576,15 @@ class Watch(commands.Cog):
                                 return
                 cacheable = [i for i in items if i.cacheable]
                 if not cacheable:
-                        await ctx.send(
+                        hint = f"{ctx.clean_prefix}request {title}"
+                        missing = (
                                 f"Nothing cacheable matches **{title}**."
                                 if items
                                 else f"I couldn't find **{title}**."
+                        )
+                        await ctx.send(
+                                missing + f" Request a download with `{hint}` "
+                                "(owner permission required)."
                         )
                         return
                 item = await self._pick_item(ctx, cacheable, title)
@@ -540,6 +613,319 @@ class Watch(commands.Cog):
                                 return
                         spec = view.spec
                 await self._start(ctx, item, spec)
+
+        async def can_download(self, user: Person) -> bool:
+                """Check owner status or an individual download grant."""
+                return await self.bot.is_owner(user) or bool(
+                        await self.config.user(user).download_allowed()
+                )
+
+        async def _arr_call(
+                self,
+                kind: str,
+                path: str,
+                *,
+                body: dict[str, Any] | None = None,
+                params: dict[str, str] | None = None,
+        ) -> Any:  # noqa: ANN401 (ARR JSON resources)
+                """Call ARR without exposing private error bodies."""
+                service = {"movie": "radarr", "tv": "sonarr"}.get(kind)
+                if service is None:
+                        msg = "Choose movie or TV show."
+                        raise PreloadError(msg)
+                tokens = await self.bot.get_shared_api_tokens(service)
+                if not tokens.get("url") or not tokens.get("api_key"):
+                        msg = f"{service} integration is not configured."
+                        raise PreloadError(msg)
+                async with httpx.AsyncClient(
+                        base_url=tokens["url"].rstrip("/") + "/api/v3/",
+                        headers={"X-Api-Key": tokens["api_key"]},
+                        timeout=30.0,
+                ) as client:
+                        try:
+                                response = await client.request(
+                                        "GET" if body is None else "POST",
+                                        path,
+                                        params=params,
+                                        json=body,
+                                )
+                        except httpx.HTTPError:
+                                msg = f"{service} could not be reached."
+                                raise PreloadError(msg) from None
+                if response.status_code >= 400:  # noqa: PLR2004
+                        msg = f"{service} answered HTTP {response.status_code}."
+                        raise PreloadError(msg)
+                try:
+                        return response.json()
+                except ValueError:
+                        msg = f"{service} returned an invalid response."
+                        raise PreloadError(msg) from None
+
+        async def acquisition_search(
+                self, kind: str, query: str
+        ) -> list[dict[str, Any]]:
+                """Look up titles without triggering any downloads."""
+                endpoint = "movie" if kind == "movie" else "series"
+                return await self._arr_call(
+                        kind, f"{endpoint}/lookup", params={"term": query}
+                )
+
+        async def acquire(
+                self,
+                user: Person,
+                kind: str,
+                title: dict[str, Any],
+                quality: str,
+        ) -> str:
+                """Check permission and add the chosen title once."""
+                if not await self.can_download(user):
+                        msg = "Download permission is required."
+                        raise PermissionError(msg)
+                profile_name = {
+                        "1080p": "Doge - 1080p default",
+                        "4k": "Doge - 4K optional",
+                }.get(quality)
+                if profile_name is None:
+                        msg = "Choose 1080p or 4K."
+                        raise PreloadError(msg)
+                async with self._acquisition_lock:
+                        endpoint = "movie" if kind == "movie" else "series"
+                        id_key = "tmdbId" if kind == "movie" else "tvdbId"
+                        if (
+                                not isinstance(title.get(id_key), int)
+                                or title[id_key] <= 0
+                        ):
+                                msg = "The selected title has no catalogue ID."
+                                raise PreloadError(msg)
+                        existing = await self._arr_call(kind, endpoint)
+                        if any(
+                                t.get(id_key) == title[id_key] for t in existing
+                        ):
+                                return (
+                                        "Already managed by ARR; no "
+                                        "duplicate or new search was "
+                                        "submitted. Check the ARR app "
+                                        "for its status."
+                                )
+                        profiles = await self._arr_call(kind, "qualityprofile")
+                        profile = next(
+                                (
+                                        p
+                                        for p in profiles
+                                        if p["name"] == profile_name
+                                ),
+                                None,
+                        )
+                        root = (
+                                "/arr/library/Movies"
+                                if kind == "movie"
+                                else "/arr/library/TV"
+                        )
+                        roots = await self._arr_call(kind, "rootfolder")
+                        if profile is None or not any(
+                                r["path"] == root and r.get("accessible", True)
+                                for r in roots
+                        ):
+                                msg = (
+                                        "The selected quality profile "
+                                        "or library root is "
+                                        "unavailable."
+                                )
+                                raise PreloadError(msg)
+                        body = dict(title)
+                        body.pop("id", None)
+                        body.update(
+                                qualityProfileId=profile["id"],
+                                rootFolderPath=root,
+                                monitored=True,
+                        )
+                        if kind == "movie":
+                                body.update(
+                                        minimumAvailability="released",
+                                        addOptions={"searchForMovie": True},
+                                )
+                        else:
+                                body.update(
+                                        seasonFolder=True,
+                                        monitorNewItems="all",
+                                        seriesType=title.get(
+                                                "seriesType", "standard"
+                                        ),
+                                )
+                                body["seasons"] = [
+                                        dict(s, monitored=s["seasonNumber"] > 0)
+                                        for s in title.get("seasons", [])
+                                ]
+                                body["addOptions"] = {
+                                        "monitor": "all",
+                                        "searchForMissingEpisodes": True,
+                                        "searchForCutoffUnmetEpisodes": False,
+                                }
+                        # Recheck after HTTP calls in case access was revoked.
+                        if not await self.can_download(user):
+                                msg = "Download permission was revoked."
+                                raise PermissionError(msg)
+                        await self._arr_call(kind, endpoint, body=body)
+                name = discord.utils.escape_markdown(str(title["title"]))
+                return (
+                        f"Requested **{name}** in **{quality.upper()}**. "
+                        "ARR will search; availability is not guaranteed. "
+                        "Imports appear in Jellyfin after processing."
+                )
+
+        async def _download_choice(
+                self,
+                ctx: commands.Context,
+                text: str,
+                options: list[tuple[str, str]],
+        ) -> str | None:
+                view = PickDownloadOption(ctx.author, options)
+                prompt = await ctx.send(
+                        text,
+                        view=view,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                if await view.wait():
+                        await _timed_out(prompt)
+                        return None
+                return view.chosen
+
+        @commands.group(name="request", invoke_without_command=True)
+        async def request(
+                self, ctx: commands.Context, *, query: str = ""
+        ) -> None:
+                """Request a movie/show: type, title, then quality.
+
+                Owner permission is required. TV includes all regular
+                seasons and monitor future episodes; specials are excluded.
+                """
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is "
+                                "required. Ask the bot owner to"
+                                " grant it."
+                        )
+                        return
+                if len(query.strip()) < 2:  # noqa: PLR2004
+                        await ctx.send(
+                                f"Use `{ctx.clean_prefix}request <title>`."
+                        )
+                        return
+                kind = await self._download_choice(
+                        ctx,
+                        "Is this a movie or TV show?",
+                        [("movie", "Movie"), ("tv", "TV show")],
+                )
+                if kind is None:
+                        return
+                try:
+                        async with ctx.typing():
+                                titles = await self.acquisition_search(
+                                        kind, query.strip()
+                                )
+                        titles = [
+                                t
+                                for t in titles
+                                if t.get(
+                                        "tmdbId"
+                                        if kind == "movie"
+                                        else "tvdbId"
+                                )
+                        ][:24]
+                        if not titles:
+                                await ctx.send(
+                                        "No matching titles. "
+                                        "Try a more specific "
+                                        "name or year."
+                                )
+                                return
+                        chosen = await self._download_choice(
+                                ctx,
+                                (
+                                        "Choose the matching title "
+                                        "(search again with a year if "
+                                        "needed):"
+                                ),
+                                [
+                                        (
+                                                str(i),
+                                                catalogue_label(t),
+                                        )
+                                        for i, t in enumerate(titles)
+                                ],
+                        )
+                        if chosen is None:
+                                return
+                        title = titles[int(chosen)]
+                        scope = (
+                                (
+                                        "All regular seasons; future "
+                                        "episodes monitored; specials "
+                                        "excluded. "
+                                )
+                                if kind == "tv"
+                                else ""
+                        )
+                        label = discord.utils.escape_markdown(
+                                catalogue_label(title)
+                        )
+                        quality = await self._download_choice(
+                                ctx,
+                                f"**{label}** — "
+                                + scope
+                                + (
+                                        "Choose a quality to confirm "
+                                        "the download request:"
+                                ),
+                                [("1080p", "1080p (default)"), ("4k", "4K")],
+                        )
+                        if quality is None:
+                                return
+                        async with ctx.typing():
+                                result = await self.acquire(
+                                        ctx.author, kind, title, quality
+                                )
+                        await ctx.send(
+                                result,
+                                allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                except (PreloadError, PermissionError) as exc:
+                        await ctx.send(f"Request not submitted: {exc}")
+
+        @request.command(name="allow")
+        @commands.is_owner()
+        async def request_allow(
+                self, ctx: commands.Context, user: discord.User
+        ) -> None:
+                """Bot owner: grant a person download permission."""
+                if not await self.bot.is_owner(ctx.author):
+                        await ctx.send(
+                                "Only the bot owner can change "
+                                "download permissions."
+                        )
+                        return
+                await self.config.user(user).download_allowed.set(True)
+                await ctx.send(
+                        f"Download permission granted to user `{user.id}`."
+                )
+
+        @request.command(name="revoke")
+        @commands.is_owner()
+        async def request_revoke(
+                self, ctx: commands.Context, user: discord.User
+        ) -> None:
+                """Bot owner: remove a person's explicit grant."""
+                if not await self.bot.is_owner(ctx.author):
+                        await ctx.send(
+                                "Only the bot owner can change "
+                                "download permissions."
+                        )
+                        return
+                await self.config.user(user).download_allowed.clear()
+                await ctx.send(
+                        f"Download permission revoked for user `{user.id}`. "
+                        "Bot owners retain access."
+                )
 
         @watch.command(name="link")
         async def watch_link(self, ctx: commands.Context, *, name: str) -> None:
