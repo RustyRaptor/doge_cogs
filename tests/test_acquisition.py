@@ -103,7 +103,7 @@ async def acquisition(  # noqa: C901 (HTTP fixture edge)
                                         },
                                 ]
                         )
-                if path == "movie":
+                if path == "movie" and request.method == "GET":
                         return web.json_response(
                                 [
                                         t
@@ -111,7 +111,7 @@ async def acquisition(  # noqa: C901 (HTTP fixture edge)
                                         if t.get("tmdbId")
                                 ]
                         )
-                if path == "series":
+                if path == "series" and request.method == "GET":
                         return web.json_response(
                                 [
                                         t
@@ -119,6 +119,12 @@ async def acquisition(  # noqa: C901 (HTTP fixture edge)
                                         if t.get("tvdbId")
                                 ]
                         )
+                if path in {"episode", "episodefile"}:
+                        return web.json_response([])
+                if path == "series" and request.method == "POST":
+                        created = {**(body or {}), "id": 7}
+                        state["existing"].append(created)
+                        return web.json_response(created, status=201)
                 if request.method == "GET":
                         return web.json_response(state["existing"])
                 return web.json_response({**(body or {}), "id": 7}, status=201)
@@ -198,7 +204,11 @@ async def test_selected_profile_and_type_reach_arr(
         assert results[0]["title"] == "Dune"
         assert all(method == "GET" for method, *_ in calls)
         await cog.acquire(
-                cast("Any", FakeAuthor(id=99)), kind, results[0], quality
+                cast("Any", FakeAuthor(id=99)),
+                kind,
+                results[0],
+                quality,
+                season=1 if kind == "tv" else None,
         )
         added = [
                 body
@@ -208,20 +218,20 @@ async def test_selected_profile_and_type_reach_arr(
         assert len(added) == 1
         assert added[0]["qualityProfileId"] == profile
         assert added[0]["rootFolderPath"] == root
-        assert added[0]["monitored"] is True
+        assert added[0]["monitored"] is (kind == "movie")
         if kind == "movie":
                 assert added[0]["tmdbId"] == 438631
                 assert added[0]["addOptions"]["searchForMovie"] is True
         else:
                 assert added[0]["tvdbId"] == 123
-                assert added[0]["monitorNewItems"] == "all"
+                assert added[0]["monitorNewItems"] == "none"
                 assert added[0]["seasons"] == [
                         {"seasonNumber": 0, "monitored": False},
-                        {"seasonNumber": 1, "monitored": True},
+                        {"seasonNumber": 1, "monitored": False},
                 ]
                 assert (
                         added[0]["addOptions"]["searchForMissingEpisodes"]
-                        is True
+                        is False
                 )
 
 

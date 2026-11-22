@@ -33,6 +33,9 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 from .downloads import describe_downloads, normalized_title
+from .errors import PreloadError, SeasonError
+from .retention import SeasonPlan
+from .seasonal import SeasonManager
 from .spec import (
         DEFAULT_NEXT,
         EpisodeSpec,
@@ -57,10 +60,6 @@ VIEW_TIMEOUT = 120
 Person = discord.User | discord.Member
 
 RequestType = Literal["discord_deleted_user", "owner", "user", "user_strict"]
-
-
-class PreloadError(Exception):
-        """media-preload refused or failed a call."""
 
 
 def _unwrap(response: Response[Any]) -> Any:  # noqa: ANN401 (generated types)
@@ -351,8 +350,11 @@ class Watch(commands.Cog):
                         self, identifier=0x0D06EBA7C4, force_registration=True
                 )
                 self.config.register_user(
-                        jellyfin_user=None, download_allowed=False
+                        jellyfin_user=None,
+                        download_allowed=False,
+                        tv_seasons={},
                 )
+                self.config.register_global(season_retention_baseline=None)
                 self._acquisition_lock = asyncio.Lock()
                 self._pollers: set[asyncio.Task[None]] = set()
 
@@ -638,6 +640,7 @@ class Watch(commands.Cog):
                 *,
                 body: dict[str, Any] | None = None,
                 params: dict[str, str] | None = None,
+                method: str | None = None,
         ) -> Any:  # noqa: ANN401 (ARR JSON resources)
                 """Call ARR without exposing private error bodies."""
                 service = {"movie": "radarr", "tv": "sonarr"}.get(kind)
@@ -655,7 +658,8 @@ class Watch(commands.Cog):
                 ) as client:
                         try:
                                 response = await client.request(
-                                        "GET" if body is None else "POST",
+                                        method
+                                        or ("GET" if body is None else "POST"),
                                         path,
                                         params=params,
                                         json=body,
@@ -666,6 +670,8 @@ class Watch(commands.Cog):
                 if response.status_code >= 400:  # noqa: PLR2004
                         msg = f"{service} answered HTTP {response.status_code}."
                         raise PreloadError(msg)
+                if response.status_code == 204 or not response.content:
+                        return None
                 try:
                         return response.json()
                 except ValueError:
@@ -780,8 +786,15 @@ class Watch(commands.Cog):
                 kind: str,
                 title: dict[str, Any],
                 quality: str,
+                *,
+                season: int | None = None,
+                expected_delete: set[int] | None = None,
         ) -> str:
-                """Check permission and add the chosen title once."""
+                """Check permission and add the chosen title or season."""
+                if kind == "tv":
+                        return await SeasonManager(self).acquire(
+                                user, title, quality, season, expected_delete
+                        )
                 if not await self.can_download(user):
                         msg = "Download permission is required."
                         raise PermissionError(msg)
@@ -838,28 +851,10 @@ class Watch(commands.Cog):
                                 rootFolderPath=root,
                                 monitored=True,
                         )
-                        if kind == "movie":
-                                body.update(
-                                        minimumAvailability="released",
-                                        addOptions={"searchForMovie": True},
-                                )
-                        else:
-                                body.update(
-                                        seasonFolder=True,
-                                        monitorNewItems="all",
-                                        seriesType=title.get(
-                                                "seriesType", "standard"
-                                        ),
-                                )
-                                body["seasons"] = [
-                                        dict(s, monitored=s["seasonNumber"] > 0)
-                                        for s in title.get("seasons", [])
-                                ]
-                                body["addOptions"] = {
-                                        "monitor": "all",
-                                        "searchForMissingEpisodes": True,
-                                        "searchForCutoffUnmetEpisodes": False,
-                                }
+                        body.update(
+                                minimumAvailability="released",
+                                addOptions={"searchForMovie": True},
+                        )
                         # Recheck after HTTP calls in case access was revoked.
                         if not await self.can_download(user):
                                 msg = "Download permission was revoked."
@@ -889,26 +884,105 @@ class Watch(commands.Cog):
                         return None
                 return view.chosen
 
-        @commands.group(name="request", invoke_without_command=True)
-        async def request(
-                self, ctx: commands.Context, *, query: str = ""
-        ) -> None:
-                """Request a movie/show: type, title, then quality.
+        async def _choose_requested_season(
+                self,
+                ctx: commands.Context,
+                title: dict[str, Any],
+        ) -> int | None:
+                """Ask for one regular season, paginating long-running shows."""
+                numbers = sorted(
+                        {
+                                s["seasonNumber"]
+                                for s in title.get("seasons", [])
+                                if s["seasonNumber"] > 0
+                        }
+                )
+                if not numbers:
+                        await ctx.send(
+                                "No regular seasons are listed for this show."
+                        )
+                        return None
+                page = 0
+                while True:
+                        options = [
+                                (str(n), f"Season {n}")
+                                for n in numbers[page : page + 22]
+                        ]
+                        if page:
+                                options.append(("previous", "Previous seasons"))
+                        if page + 22 < len(numbers):
+                                options.append(("next", "More seasons"))
+                        chosen = await self._download_choice(
+                                ctx,
+                                "Which season would you like to keep?",
+                                options,
+                        )
+                        if chosen is None:
+                                return None
+                        if chosen == "next":
+                                page += 22
+                        elif chosen == "previous":
+                                page -= 22
+                        else:
+                                return int(chosen)
 
-                Owner permission is required. TV includes all regular
-                seasons and monitor future episodes; specials are excluded.
-                """
+        async def _season_request_plan(
+                self,
+                ctx: commands.Context,
+                title: dict[str, Any],
+        ) -> tuple[int | None, SeasonPlan | None, str]:
+                """Preview a season switch before quality confirmation."""
+                season = await self._choose_requested_season(ctx, title)
+                if season is None:
+                        return None, None, ""
+                preview = await SeasonManager(self).preview(
+                        ctx.author, title, season
+                )
+                scope = f"Request season {season}. "
+                if preview.protected:
+                        scope += (
+                                "Complete archive: existing seasons are"
+                                " protected. "
+                        )
+                elif preview.remove:
+                        removed = ", ".join(
+                                f"season {n}" for n in sorted(preview.remove)
+                        )
+                        scope += (
+                                f"This will delete {removed} "
+                                "if nobody else requests them. "
+                        )
+                scope += "TV quality applies to this show. "
+                return season, preview, scope
+
+        async def _request_allowed(
+                self, ctx: commands.Context, query: str
+        ) -> bool:
+                """Check permission and title before looking anything up."""
                 if not await self.can_download(ctx.author):
                         await ctx.send(
                                 "Download permission is "
                                 "required. Ask the bot owner to"
                                 " grant it."
                         )
-                        return
+                        return False
                 if len(query.strip()) < 2:  # noqa: PLR2004
                         await ctx.send(
                                 f"Use `{ctx.clean_prefix}request <title>`."
                         )
+                        return False
+                return True
+
+        @commands.group(name="request", invoke_without_command=True)
+        async def request(
+                self, ctx: commands.Context, *, query: str = ""
+        ) -> None:
+                """Request a movie/show: type, title, then quality.
+
+                Owner permission is required. TV asks for one season per user;
+                seasons selected by other users remain available.
+                """
+                if not await self._request_allowed(ctx, query):
                         return
                 kind = await self._download_choice(
                         ctx,
@@ -957,7 +1031,7 @@ class Watch(commands.Cog):
                                 return
                         title = titles[int(chosen)]
                         existing = await self._existing_title(kind, title)
-                        if existing is not None:
+                        if existing is not None and kind == "movie":
                                 await ctx.send(
                                         await self.acquisition_status(
                                                 kind, existing
@@ -965,15 +1039,17 @@ class Watch(commands.Cog):
                                         allowed_mentions=discord.AllowedMentions.none(),
                                 )
                                 return
-                        scope = (
+                        season = None
+                        preview = None
+                        scope = ""
+                        if kind == "tv":
                                 (
-                                        "All regular seasons; future "
-                                        "episodes monitored; specials "
-                                        "excluded. "
-                                )
-                                if kind == "tv"
-                                else ""
-                        )
+                                        season,
+                                        preview,
+                                        scope,
+                                ) = await self._season_request_plan(ctx, title)
+                                if season is None:
+                                        return
                         label = discord.utils.escape_markdown(
                                 catalogue_label(title)
                         )
@@ -991,13 +1067,20 @@ class Watch(commands.Cog):
                                 return
                         async with ctx.typing():
                                 result = await self.acquire(
-                                        ctx.author, kind, title, quality
+                                        ctx.author,
+                                        kind,
+                                        title,
+                                        quality,
+                                        season=season,
+                                        expected_delete=set(preview.remove)
+                                        if preview
+                                        else None,
                                 )
                         await ctx.send(
                                 result,
                                 allowed_mentions=discord.AllowedMentions.none(),
                         )
-                except (PreloadError, PermissionError) as exc:
+                except (PreloadError, PermissionError, SeasonError) as exc:
                         await ctx.send(f"Request not submitted: {exc}")
 
         @request.command(name="allow")

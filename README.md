@@ -153,7 +153,7 @@ points to `[p]request <title>` instead of downloading automatically.
 
 | Command | Purpose |
 |---|---|
-| `[p]request Dune` | Choose Movie/TV, a matching catalogue title/year, then 1080p or 4K |
+| `[p]request Dune` | Choose Movie/TV, title/year, a TV season, then 1080p or 4K |
 | `[p]request allow @person` | Bot owner: grant an individual download permission |
 | `[p]request revoke @person` | Bot owner: remove that permission |
 
@@ -166,15 +166,15 @@ Each menu belongs to its requester, includes Cancel, and expires after two
 minutes. Even a single matching title requires explicit selection. Results show
 title/year (up to24 matches); search again with a year to narrow them. The final
 quality choice confirms the request. No ARR add/search happens before that step.
-TV requests include **all regular seasons and future monitored episodes**;
-specials are excluded. Movie requests use released-only availability. Spanish
-libraries and music acquisition are outside this command.
+TV requests select **one regular season per Discord user per show**; specials
+are excluded. Movie requests use released-only availability. Spanish libraries
+and music acquisition are outside this command.
 
 Title lookup uses Radarr/Sonarr's metadata catalogues, rather than exposing raw
 release/torrent names. ARR subsequently searches its configured indexers under
-the chosen quality/custom-format profile. Existing ARR titles are not changed,
-added twice or searched again. Selecting an existing title shows its current ARR
-status immediately, without asking for another quality choice. A successful
+the chosen quality/custom-format profile. Existing movies show status without
+being added or searched again. TV choices update shared season retention as
+described below. A successful
 request means ARR accepted it, not that a matching release was found or imported.
 The existing RDTC download/import/NFO/Jellyfin integration handles subsequent work.
 
@@ -188,6 +188,60 @@ profile/root stops the request instead of silently selecting another one.
 Raw ARR errors/headers are not sent to Discord. No new service or API endpoint
 is required.
 
+### Shared TV season retention
+
+TV requests now follow **TV → title → season → quality/confirmation**. The
+season menu supports long-running shows through pagination. Each person has one
+selected season per show, shared across Discord servers. The stored selection
+uses the Discord user ID and TVDB ID, not a changeable user/title name.
+
+- If Alice chooses season1 and Bob chooses season2, both seasons are retained.
+- If Alice switches to season3, season1 is removed only if nobody else still
+  selects it; Bob's season2 remains.
+- If both choose season1 and Alice switches to season2, season1 stays for Bob.
+- Requesting an already-downloaded/downloading season records the person's
+  selection without starting a duplicate download. `watch` does not claim it.
+
+**The user decides when to switch.** Jellyfin watched/completion status is not
+consulted. The final confirmation lists the seasons that would be deleted.
+To keep a season while somebody else switches, request that season once so the
+bot records your selection. Existing partial shows have no historical per-user
+claims; their unclaimed seasons can be removed when an authorized user confirms
+a new season request. Deployment does not perform a bulk cleanup.
+
+**Complete existing shows are exempt.** The first adoption snapshot records
+Sonarr shows with every aired regular episode present. That protected TVDB list
+is frozen; completing a new on-demand show later does not automatically turn it
+into a permanent archive. Protected shows keep all their existing files and
+monitoring. Untracked legacy files outside Sonarr are never deleted by this code.
+
+For other shows, Sonarr monitors only the union of users' requested seasons and
+sets `monitorNewItems=none`; it cannot automatically fetch later seasons. Future
+episodes of an explicitly selected ongoing season remain monitored. TV quality
+profiles apply to the entire show, which the confirmation states.
+
+A switch first unmonitors released seasons, preserving other users' selections.
+The actor's new season is activated only after cleanup succeeds. Old unclaimed
+downloads are cancelled without blocklisting, and episode files are deleted
+through Sonarr's scoped API using freshly resolved file IDs. Multi-season packs
+needed by another person are not cancelled; ambiguous cases stop for review.
+Imports racing a switch are re-read before cleanup/search. Newly added shows use
+post-add `monitor=skip` so Sonarr's initial scan cannot overwrite the selection.
+Only `SeasonSearch` for the chosen season is submitted, never a whole-show search.
+
+Permission is rechecked before every Sonarr mutation. Expanded/stale deletion
+previews stop rather than silently deleting additional seasons. If cleanup fails,
+the saved choice remains for retry, the new season stays paused, and no new
+season search starts. If the bot restarts mid-switch, repeat the same request to
+reconcile it. File removal follows Sonarr's normal deletion settings; the current
+instance has no recycle bin configured. A missing/revoked download grant prevents
+further mutations. Revoking access does not automatically erase retained choices.
+
+Choices live in Red Config `Watch` user field `tv_seasons`; the archive baseline
+is global `season_retention_baseline`. Red user-data deletion clears that user's
+choices without deleting shared media immediately. No periodic watched-status
+job or extra service/API endpoint is involved.
+
 ### In-progress download status
 
 When `watch` cannot find playable library media, it checks existing English
@@ -196,10 +250,11 @@ preload fails (for example, a series is in Jellyfin but its requested episode
 has not finished downloading). This is read-only and works for users without
 download permission. Existing playable media keeps the normal preload behavior.
 
-`request` shows an existing title's status after title selection, skipping the
-quality step. New-title download permissions are unchanged. Neither path starts
-a second download, triggers a release search, or changes a quality profile
-simply to check status.
+`request` shows an existing movie's status after title selection, skipping the
+quality step. For TV it records a season choice, then includes download progress
+in the response. `watch` remains a read-only progress/preload command; use it
+when you want status without changing your season choice. Download permissions
+remain owner-controlled.
 
 Status is a snapshot of ARR's queue, with percentage and ETA when available.
 Paused, queued, needs-attention and downloaded/importing states are shown
