@@ -173,7 +173,8 @@ libraries and music acquisition are outside this command.
 Title lookup uses Radarr/Sonarr's metadata catalogues, rather than exposing raw
 release/torrent names. ARR subsequently searches its configured indexers under
 the chosen quality/custom-format profile. Existing ARR titles are not changed,
-added twice or searched again; inspect the ARR app for their status. A successful
+added twice or searched again. Selecting an existing title shows its current ARR
+status immediately, without asking for another quality choice. A successful
 request means ARR accepted it, not that a matching release was found or imported.
 The existing RDTC download/import/NFO/Jellyfin integration handles subsequent work.
 
@@ -186,6 +187,37 @@ New roots are `/arr/library/TV` and `/arr/library/Movies`. A missing selected
 profile/root stops the request instead of silently selecting another one.
 Raw ARR errors/headers are not sent to Discord. No new service or API endpoint
 is required.
+
+### In-progress download status
+
+When `watch` cannot find playable library media, it checks existing English
+Sonarr/Radarr entries before suggesting a new request. It also checks when a
+preload fails (for example, a series is in Jellyfin but its requested episode
+has not finished downloading). This is read-only and works for users without
+download permission. Existing playable media keeps the normal preload behavior.
+
+`request` shows an existing title's status after title selection, skipping the
+quality step. New-title download permissions are unchanged. Neither path starts
+a second download, triggers a release search, or changes a quality profile
+simply to check status.
+
+Status is a snapshot of ARR's queue, with percentage and ETA when available.
+Paused, queued, needs-attention and downloaded/importing states are shown
+separately. Unknown sizes produce **progress unavailable** rather than an
+invented percentage. A managed title with no active queue entry is described
+as waiting, not downloading. Movies already imported are reported as downloaded;
+a missing Jellyfin result may need its library scan to finish.
+
+Series progress is shown per transfer; multiple episode rows for one season
+pack count as one download. If multiple requested titles match, a menu lets the
+user choose title/type/year. Replies show at most five transfers plus the
+remaining count. Raw release names, private download IDs, filesystem paths and
+upstream error messages are excluded. A failed queue API is reported as
+**temporarily unavailable**.
+
+This adds no background message polling and does not modify ARR Discord webhook
+notifications. Run the command again for an updated snapshot; existing channel
+notifications continue to handle completion events.
 
 ### The client library
 

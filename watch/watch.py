@@ -32,6 +32,7 @@ from media_preload_client.types import UNSET, Response
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
+from .downloads import describe_downloads, normalized_title
 from .spec import (
         DEFAULT_NEXT,
         EpisodeSpec,
@@ -514,6 +515,12 @@ class Watch(commands.Cog):
                                 item, spec, ctx.author, jellyfin_user
                         )
                 except (PreloadError, httpx.HTTPError) as exc:
+                        if await self._show_download_status(
+                                ctx,
+                                item.name,
+                                series_only=item.type_ == MediaType.SERIES,
+                        ):
+                                return
                         await ctx.send(f"Couldn't start that: {exc}")
                         return
                 message = await ctx.send(
@@ -576,6 +583,10 @@ class Watch(commands.Cog):
                                 return
                 cacheable = [i for i in items if i.cacheable]
                 if not cacheable:
+                        if await self._show_download_status(
+                                ctx, title, series_only=spec is not None
+                        ):
+                                return
                         hint = f"{ctx.clean_prefix}request {title}"
                         missing = (
                                 f"Nothing cacheable matches **{title}**."
@@ -670,6 +681,99 @@ class Watch(commands.Cog):
                         kind, f"{endpoint}/lookup", params={"term": query}
                 )
 
+        async def _existing_title(
+                self,
+                kind: str,
+                selected: dict[str, Any],
+        ) -> dict[str, Any] | None:
+                """Match the selected catalogue ID against managed media."""
+                endpoint = "movie" if kind == "movie" else "series"
+                key = "tmdbId" if kind == "movie" else "tvdbId"
+                titles = await self._arr_call(kind, endpoint)
+                return next(
+                        (t for t in titles if t.get(key) == selected.get(key)),
+                        None,
+                )
+
+        async def acquisition_status(
+                self, kind: str, title: dict[str, Any]
+        ) -> str:
+                """Read progress without requiring download permission."""
+                key = "movieId" if kind == "movie" else "seriesId"
+                params = {key: str(title["id"])}
+                if kind == "tv":
+                        params["includeEpisode"] = "true"
+                try:
+                        records = await self._arr_call(
+                                kind, "queue/details", params=params
+                        )
+                except PreloadError:
+                        return (
+                                "Already requested; download status is "
+                                "temporarily unavailable. No new "
+                                "download was started."
+                        )
+                return describe_downloads(kind, title, records)
+
+        async def _show_download_status(
+                self,
+                ctx: commands.Context,
+                query: str,
+                *,
+                series_only: bool,
+        ) -> bool:
+                """Find managed titles missing playable library media."""
+                kinds = ["tv"] if series_only else ["movie", "tv"]
+                found: list[tuple[str, dict[str, Any]]] = []
+                term = normalized_title(query)
+                for kind in kinds:
+                        endpoint = "movie" if kind == "movie" else "series"
+                        try:
+                                titles = await self._arr_call(kind, endpoint)
+                        except PreloadError:
+                                continue
+                        for title in titles:
+                                label = normalized_title(catalogue_label(title))
+                                if term and term in label:
+                                        found.append((kind, title))
+                if not found:
+                        return False
+                exact = [
+                        p
+                        for p in found
+                        if term
+                        in {
+                                normalized_title(str(p[1]["title"])),
+                                normalized_title(catalogue_label(p[1])),
+                        }
+                ]
+                if len(exact) == 1:
+                        found = exact
+                if len(found) > 1:
+                        found = found[:24]
+                        choice = await self._download_choice(
+                                ctx,
+                                "Which requested title do you mean?",
+                                [
+                                        (
+                                                str(i),
+                                                catalogue_label(t)
+                                                + f" · {kind}",
+                                        )
+                                        for i, (kind, t) in enumerate(found)
+                                ],
+                        )
+                        if choice is None:
+                                return True
+                        kind, title = found[int(choice)]
+                else:
+                        kind, title = found[0]
+                await ctx.send(
+                        await self.acquisition_status(kind, title),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+
         async def acquire(
                 self,
                 user: Person,
@@ -697,15 +801,10 @@ class Watch(commands.Cog):
                         ):
                                 msg = "The selected title has no catalogue ID."
                                 raise PreloadError(msg)
-                        existing = await self._arr_call(kind, endpoint)
-                        if any(
-                                t.get(id_key) == title[id_key] for t in existing
-                        ):
-                                return (
-                                        "Already managed by ARR; no "
-                                        "duplicate or new search was "
-                                        "submitted. Check the ARR app "
-                                        "for its status."
+                        existing = await self._existing_title(kind, title)
+                        if existing is not None:
+                                return await self.acquisition_status(
+                                        kind, existing
                                 )
                         profiles = await self._arr_call(kind, "qualityprofile")
                         profile = next(
@@ -857,6 +956,15 @@ class Watch(commands.Cog):
                         if chosen is None:
                                 return
                         title = titles[int(chosen)]
+                        existing = await self._existing_title(kind, title)
+                        if existing is not None:
+                                await ctx.send(
+                                        await self.acquisition_status(
+                                                kind, existing
+                                        ),
+                                        allowed_mentions=discord.AllowedMentions.none(),
+                                )
+                                return
                         scope = (
                                 (
                                         "All regular seasons; future "
