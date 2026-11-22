@@ -185,7 +185,11 @@ The deployed instance uses English Sonarr on Dragapult8969 and Radarr7878.
 Profiles are resolved by name: `Doge - 1080p default` / `Doge - 4K optional`.
 New roots are `/arr/library/TV` and `/arr/library/Movies`. A missing selected
 profile/root stops the request instead of silently selecting another one.
-Raw ARR errors/headers are not sent to Discord. No new service or API endpoint
+Raw ARR errors/headers are not sent to Discord. Catalogue lookups have a
+60-second read budget and retry one read timeout after a short pause. Writes,
+download requests, and deletions are never automatically retried. A timed-out
+write tells the user to check its status before retrying; catalogue timeouts
+are distinguished from an unreachable ARR service. No new service/API endpoint
 is required.
 
 ### Shared TV season retention

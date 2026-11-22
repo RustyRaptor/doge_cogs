@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestServer
 from redbot.core import Config
 from watch_helpers import FakeAuthor, FakeContext
 
-from watch.watch import Watch
+from watch.watch import PreloadError, Watch
 
 
 class RequestBot:
@@ -690,3 +690,92 @@ async def test_ambiguous_watch_selects_correct_media_type(
         assert "50%" in ctx.texts[-1]
         assert "75%" not in ctx.texts[-1]
         assert all(method == "GET" for method, *_ in calls)
+
+
+@pytest.mark.parametrize("failure", ["first", "always", "slow"])
+async def test_catalogue_tolerates_transient_or_slow_reads(
+        acquisition: tuple[Watch, list[Any], dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+) -> None:
+        """Tolerate slow catalogue reads without calling ARR offline."""
+        import httpx
+
+        cog, _, _ = acquisition
+        requests: list[httpx.Request] = []
+        client = httpx.AsyncClient
+
+        def respond(request: httpx.Request) -> httpx.Response:
+                requests.append(request)
+                slow = (
+                        failure == "slow"
+                        and request.extensions["timeout"]["read"] < 60
+                )
+                if (
+                        failure == "always"
+                        or (failure == "first" and len(requests) == 1)
+                        or slow
+                ):
+                        msg = "private-upstream-detail"
+                        raise httpx.ReadTimeout(msg, request=request)
+                return httpx.Response(
+                        200,
+                        json=[
+                                {
+                                        "title": (
+                                                "You Don't Mess with the Zohan"
+                                        ),
+                                        "year": 2008,
+                                        "tmdbId": 10661,
+                                }
+                        ],
+                )
+
+        monkeypatch.setattr(
+                httpx,
+                "AsyncClient",
+                lambda **kwargs: client(
+                        transport=httpx.MockTransport(respond), **kwargs
+                ),
+        )
+        if failure == "always":
+                with pytest.raises(
+                        Exception, match="catalogue.*timed out"
+                ) as error:
+                        await cog.acquisition_search("movie", "Zohan")
+                assert "private-upstream-detail" not in str(error.value)
+                assert len(requests) == 2
+        else:
+                result = await cog.acquisition_search("movie", "Zohan")
+                assert result[0]["title"] == "You Don't Mess with the Zohan"
+                assert len(requests) == (2 if failure == "first" else 1)
+        assert all(r.method == "GET" for r in requests)
+
+
+async def test_mutation_timeout_is_never_retried(
+        acquisition: tuple[Watch, list[Any], dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+        """Never repeat an uncertain download request."""
+        import httpx
+
+        cog, _, _ = acquisition
+        requests: list[httpx.Request] = []
+        client = httpx.AsyncClient
+
+        def respond(request: httpx.Request) -> httpx.Response:
+                requests.append(request)
+                msg = "private-detail"
+                raise httpx.ReadTimeout(msg, request=request)
+
+        monkeypatch.setattr(
+                httpx,
+                "AsyncClient",
+                lambda **kwargs: client(
+                        transport=httpx.MockTransport(respond), **kwargs
+                ),
+        )
+        with pytest.raises(PreloadError, match="timed out.*status") as error:
+                await cog._arr_call("movie", "movie", body={"title": "Zohan"})
+        assert len(requests) == 1
+        assert "private-detail" not in str(error.value)

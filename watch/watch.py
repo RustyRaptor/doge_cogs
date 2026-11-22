@@ -651,22 +651,30 @@ class Watch(commands.Cog):
                 if not tokens.get("url") or not tokens.get("api_key"):
                         msg = f"{service} integration is not configured."
                         raise PreloadError(msg)
+                lookup = (
+                        body is None
+                        and method in {None, "GET"}
+                        and path
+                        in {
+                                "movie/lookup",
+                                "series/lookup",
+                        }
+                )
+                timeout = httpx.Timeout(30.0, read=60.0 if lookup else 30.0)
                 async with httpx.AsyncClient(
                         base_url=tokens["url"].rstrip("/") + "/api/v3/",
                         headers={"X-Api-Key": tokens["api_key"]},
-                        timeout=30.0,
+                        timeout=timeout,
                 ) as client:
-                        try:
-                                response = await client.request(
-                                        method
-                                        or ("GET" if body is None else "POST"),
-                                        path,
-                                        params=params,
-                                        json=body,
-                                )
-                        except httpx.HTTPError:
-                                msg = f"{service} could not be reached."
-                                raise PreloadError(msg) from None
+                        response = await self._arr_response(
+                                client,
+                                service,
+                                path,
+                                method or ("GET" if body is None else "POST"),
+                                body,
+                                params,
+                                lookup=lookup,
+                        )
                 if response.status_code >= 400:  # noqa: PLR2004
                         msg = f"{service} answered HTTP {response.status_code}."
                         raise PreloadError(msg)
@@ -677,6 +685,40 @@ class Watch(commands.Cog):
                 except ValueError:
                         msg = f"{service} returned an invalid response."
                         raise PreloadError(msg) from None
+
+        async def _arr_response(
+                self,
+                client: httpx.AsyncClient,
+                service: str,
+                path: str,
+                method: str,
+                body: dict[str, Any] | None,
+                params: dict[str, str] | None,
+                *,
+                lookup: bool,
+        ) -> httpx.Response:
+                """Retry only a catalogue read, never an uncertain mutation."""
+                for attempt in range(2 if lookup else 1):
+                        try:
+                                return await client.request(
+                                        method, path, params=params, json=body
+                                )
+                        except httpx.ReadTimeout:
+                                if lookup and attempt == 0:
+                                        await asyncio.sleep(1)
+                                        continue
+                                if lookup:
+                                        msg = f"{service} catalogue lookup "
+                                        msg += "timed out. Try again shortly."
+                                else:
+                                        msg = f"{service} request timed out. "
+                                        msg += "Check status before retrying."
+                                raise PreloadError(msg) from None
+                        except httpx.HTTPError:
+                                msg = f"{service} could not be reached."
+                                raise PreloadError(msg) from None
+                msg = f"{service} catalogue lookup did not finish."
+                raise PreloadError(msg)
 
         async def acquisition_search(
                 self, kind: str, query: str
