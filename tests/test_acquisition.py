@@ -779,3 +779,18 @@ async def test_mutation_timeout_is_never_retried(
                 await cog._arr_call("movie", "movie", body={"title": "Zohan"})
         assert len(requests) == 1
         assert "private-detail" not in str(error.value)
+
+
+async def test_confirmed_movie_request_subscribes_its_requester_to_completion(
+        acquisition: tuple[Watch, list[Any], dict[str, Any]],
+) -> None:
+        """Catch missing movie completion subscriptions."""
+        cog, _calls, _state = acquisition
+        ctx = WizardContext(["movie", "0", "1080p"], author=FakeAuthor(id=99))
+        await Watch.request.callback(cog, ctx, query="Dune")
+        jobs = await cog.config.pending_jobs()
+        assert len(jobs) == 1
+        job = next(iter(jobs.values()))
+        assert job["owner"] == 99
+        assert job["kind"] == "movie"
+        assert job["foreign_id"] == 438631

@@ -9,6 +9,8 @@ import asyncio
 import contextlib
 import logging
 import os
+from collections.abc import Awaitable, Callable, Coroutine
+from time import monotonic
 from typing import Any, Literal
 
 import discord
@@ -34,6 +36,9 @@ from redbot.core.bot import Red
 
 from .downloads import describe_downloads, normalized_title
 from .errors import PreloadError, SeasonError
+from .jellyfin import Jellyfin
+from .jobs import Jobs
+from .notify import completion_ping
 from .retention import SeasonPlan
 from .seasonal import SeasonManager
 from .spec import (
@@ -46,6 +51,7 @@ from .spec import (
         parse_season,
         split_query,
 )
+from .spotify import SpotifyPublic, playlist_id
 
 log = logging.getLogger("red.doge_cogs.watch")
 
@@ -356,19 +362,99 @@ class Watch(commands.Cog):
                 )
                 self.config.register_global(season_retention_baseline=None)
                 self._acquisition_lock = asyncio.Lock()
+                self._background: Jobs | None = None
+                self._command_runs: dict[int, tuple[float, int]] = {}
                 self._pollers: set[asyncio.Task[None]] = set()
+
+        @commands.Cog.listener("on_command")
+        async def command_started(self, ctx: commands.Context) -> None:
+                """Remember when a human starts a command in any cog."""
+                if ctx.command is not None and not getattr(
+                        ctx.author, "bot", False
+                ):
+                        self._command_runs[ctx.message.id] = (
+                                monotonic(),
+                                ctx.author.id,
+                        )
+
+        @commands.Cog.listener("on_command_completion")
+        async def command_finished(self, ctx: commands.Context) -> None:
+                """Ping after long commands outside media workflows."""
+                await self._command_result(ctx, failed=False)
+
+        @commands.Cog.listener("on_command_error")
+        async def command_failed(
+                self, ctx: commands.Context, error: commands.CommandError
+        ) -> None:
+                """Report failure without private exception bodies."""
+                del error
+                await self._command_result(ctx, failed=True)
+
+        async def _command_result(
+                self, ctx: commands.Context, *, failed: bool
+        ) -> None:
+                """Avoid instant and duplicate completion pings."""
+                start = self._command_runs.pop(ctx.message.id, None)
+                if (
+                        start is None
+                        or ctx.command is None
+                        or monotonic() - start[0] < 10
+                ):
+                        return
+                name = ctx.command.qualified_name
+                if name.split()[0] in {"watch", "request", "importplaylist"}:
+                        return
+                result = "ended with an error" if failed else "finished"
+                await completion_ping(
+                        self.bot,
+                        ctx.channel.id,
+                        ctx.author.id,
+                        f"Command `{name}` {result}.",
+                        send=ctx.send,
+                )
+
+        def background(self) -> Jobs:
+                """Initialize durable jobs during cog upgrades."""
+                jobs = getattr(self, "_background", None)
+                if jobs is None:
+                        jobs = Jobs(self)
+                        self._background = jobs
+                return jobs
+
+        def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+                """Track a background task so unloading cancels it."""
+                task = asyncio.create_task(coroutine)
+                self._pollers.add(task)
+                task.add_done_callback(self._pollers.discard)
+
+        async def cog_load(self) -> None:
+                """Resume persisted imports and notifications after startup."""
+                self._spawn(self.background().watch_loop())
 
         async def cog_unload(self) -> None:
                 """Stop polling."""
-                for task in self._pollers:
+                tasks = list(self._pollers)
+                for task in tasks:
                         task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         async def red_delete_data_for_user(
                 self, *, requester: RequestType, user_id: int
         ) -> None:
                 """Forget a user's linked Jellyfin name."""
                 del requester
-                await self.config.user_from_id(user_id).clear()
+                if hasattr(self, "_command_runs"):
+                        self._command_runs = {
+                                key: run
+                                for key, run in self._command_runs.items()
+                                if run[1] != user_id
+                        }
+                self.config.register_global(pending_jobs={})
+                async with self.config.pending_jobs() as jobs:
+                        for key in list(jobs):
+                                if jobs[key].get("owner") == user_id:
+                                        del jobs[key]
+                        await self.config.user_from_id(user_id).clear()
 
         async def _client(self) -> AuthenticatedClient:
                 tokens = await self.bot.get_shared_api_tokens("media_preload")
@@ -481,6 +567,9 @@ class Watch(commands.Cog):
                 self,
                 message: discord.Message,
                 request: PreloadRequest,
+                *,
+                job_key: str | None = None,
+                send: Callable[..., Awaitable[Any]] | None = None,
         ) -> None:
                 """Edit ``message`` with progress until the request finishes."""
                 waited = 0
@@ -501,6 +590,10 @@ class Watch(commands.Cog):
                 with contextlib.suppress(discord.HTTPException):
                         await message.edit(
                                 embed=self._embed(request), view=None
+                        )
+                if job_key and send and is_finished(request):
+                        await self.background().finish_preload(
+                                job_key, request, send
                         )
 
         async def _start(
@@ -525,13 +618,26 @@ class Watch(commands.Cog):
                                 return
                         await ctx.send(f"Couldn't start that: {exc}")
                         return
+                job_key = await self.background().register(
+                        ctx,
+                        f"preload:{request.id}",
+                        {
+                                "kind": "preload",
+                                "request_id": request.id,
+                                "title": request.title,
+                        },
+                )
                 message = await ctx.send(
                         embed=self._embed(request),
                         view=None
                         if is_finished(request)
                         else CancelView(self, request.id, ctx.author.id),
                 )
-                task = asyncio.create_task(self._follow(message, request))
+                task = asyncio.create_task(
+                        self._follow(
+                                message, request, job_key=job_key, send=ctx.send
+                        )
+                )
                 self._pollers.add(task)
                 task.add_done_callback(self._pollers.discard)
 
@@ -643,7 +749,11 @@ class Watch(commands.Cog):
                 method: str | None = None,
         ) -> Any:  # noqa: ANN401 (ARR JSON resources)
                 """Call ARR without exposing private error bodies."""
-                service = {"movie": "radarr", "tv": "sonarr"}.get(kind)
+                service = {
+                        "movie": "radarr",
+                        "tv": "sonarr",
+                        "music": "lidarr",
+                }.get(kind)
                 if service is None:
                         msg = "Choose movie or TV show."
                         raise PreloadError(msg)
@@ -658,11 +768,13 @@ class Watch(commands.Cog):
                         in {
                                 "movie/lookup",
                                 "series/lookup",
+                                "album/lookup",
                         }
                 )
                 timeout = httpx.Timeout(30.0, read=60.0 if lookup else 30.0)
                 async with httpx.AsyncClient(
-                        base_url=tokens["url"].rstrip("/") + "/api/v3/",
+                        base_url=tokens["url"].rstrip("/")
+                        + ("/api/v1/" if kind == "music" else "/api/v3/"),
                         headers={"X-Api-Key": tokens["api_key"]},
                         timeout=timeout,
                 ) as client:
@@ -1074,6 +1186,9 @@ class Watch(commands.Cog):
                         title = titles[int(chosen)]
                         existing = await self._existing_title(kind, title)
                         if existing is not None and kind == "movie":
+                                await self._subscribe_request(
+                                        ctx, kind, existing, None
+                                )
                                 await ctx.send(
                                         await self.acquisition_status(
                                                 kind, existing
@@ -1118,12 +1233,39 @@ class Watch(commands.Cog):
                                         if preview
                                         else None,
                                 )
+                        await self._subscribe_request(ctx, kind, title, season)
                         await ctx.send(
                                 result,
                                 allowed_mentions=discord.AllowedMentions.none(),
                         )
                 except (PreloadError, PermissionError, SeasonError) as exc:
                         await ctx.send(f"Request not submitted: {exc}")
+
+        async def _require_download(self, user: Person) -> None:
+                """Recheck download permission immediately before submission."""
+                if not await self.can_download(user):
+                        message = "Download permission was removed."
+                        raise PermissionError(message)
+
+        async def _subscribe_request(
+                self,
+                ctx: commands.Context,
+                kind: str,
+                title: dict[str, Any],
+                season: int | None,
+        ) -> None:
+                """Track requested titles and seasons until import."""
+                foreign_id = title["tmdbId" if kind == "movie" else "tvdbId"]
+                data = {
+                        "kind": kind,
+                        "foreign_id": foreign_id,
+                        "title": title["title"],
+                }
+                if kind == "tv":
+                        data["season"] = season
+                await self.background().register(
+                        ctx, f"{kind}:{foreign_id}:{season}", data
+                )
 
         @request.command(name="allow")
         @commands.is_owner()
@@ -1158,6 +1300,173 @@ class Watch(commands.Cog):
                 await ctx.send(
                         f"Download permission revoked for user `{user.id}`. "
                         "Bot owners retain access."
+                )
+
+        @commands.group(
+                name="importplaylist",
+                aliases=["spotifyimport"],
+                invoke_without_command=True,
+        )
+        @commands.cooldown(1, 15, commands.BucketType.user)
+        async def playlist(
+                self, ctx: commands.Context, *, url: str = ""
+        ) -> None:
+                """Import a public Spotify playlist via Lidarr.
+
+                Link your Jellyfin account first. Download permission matches
+                owner-managed permission as `request`. Public snapshots may stop
+                at100songs, in which case the visible subset needs confirmation.
+                """
+                jobs = self.background()
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is required; ask "
+                                "the owner to use `request allow`."
+                        )
+                        return
+                linked = await self.config.user(ctx.author).jellyfin_user()
+                if not linked:
+                        await ctx.send(
+                                "First link your Jellyfin account with "
+                                "`watch link <name>`."
+                        )
+                        return
+                try:
+                        source_id = playlist_id(url)
+                        key = f"{ctx.author.id}:playlist:{source_id}"
+                        previous = (await self.config.pending_jobs()).get(key)
+                        if previous and previous.get("mutation"):
+                                await ctx.send(
+                                        "An earlier write needs owner "
+                                        "verification before reimporting. "
+                                        "Use `importplaylist status`."
+                                )
+                                return
+                        if previous and not previous.get("notified"):
+                                await ctx.send(
+                                        "That playlist import is "
+                                        "already running. Use "
+                                        "`importplaylist status`."
+                                )
+                                return
+
+                        async def tokens() -> dict[str, str]:
+                                return await self.bot.get_shared_api_tokens(
+                                        "jellyfin"
+                                )
+
+                        user_id = await Jellyfin(tokens).user(linked)
+                        async with httpx.AsyncClient() as client:
+                                snapshot = await SpotifyPublic(client).snapshot(
+                                        url
+                                )
+                        name = discord.utils.escape_markdown(snapshot["name"])
+                        username = discord.utils.escape_markdown(
+                                ctx.author.name
+                        )
+                        count = len(snapshot["tracks"])
+                        partial = snapshot["partial"]
+                        warning = (
+                                (
+                                        f"Spotify exposes only the visible "
+                                        f"{count} songs; this playlist may be "
+                                        f"incomplete. "
+                                )
+                                if partial
+                                else ""
+                        )
+                        option = "visible" if partial else "import"
+                        choice = await self._download_choice(
+                                ctx,
+                                warning
+                                + (
+                                        f"Import **{name}** ({count} songs)? "
+                                        f"Missing songs request their albums "
+                                        f"in Lidarr. The Jellyfin playlist "
+                                        f"will be public and named "
+                                        f"**{username} - {name}**."
+                                ),
+                                [
+                                        (
+                                                option,
+                                                f"Import visible {count} only"
+                                                if partial
+                                                else "Import playlist",
+                                        )
+                                ],
+                        )
+                        if choice != option:
+                                return
+                        await self._require_download(ctx.author)
+                        key = await jobs.register(
+                                ctx,
+                                f"playlist:{source_id}",
+                                {
+                                        "kind": "playlist",
+                                        "stage": "preparing",
+                                        "source_id": source_id,
+                                        "name": snapshot["name"],
+                                        "tracks": snapshot["tracks"],
+                                        "partial": partial,
+                                        "user_id": user_id,
+                                },
+                        )
+                        await ctx.send(
+                                "Playlist import started. I'll ping "
+                                "you when the songs are in Jellyfin; "
+                                "`importplaylist status` shows "
+                                "progress."
+                        )
+                        self._spawn(jobs.run_once(key))
+                except (PreloadError, ValueError, PermissionError) as exc:
+                        await ctx.send(
+                                f"Playlist import not started: {exc}",
+                                allowed_mentions=discord.AllowedMentions.none(),
+                        )
+
+        @playlist.command(name="status")
+        async def playlist_status(self, ctx: commands.Context) -> None:
+                """Show your imports and songs needing review."""
+                self.background()
+                own = [
+                        j
+                        for j in (await self.config.pending_jobs()).values()
+                        if j.get("owner") == ctx.author.id
+                        and j.get("kind") == "playlist"
+                ]
+                if not own:
+                        await ctx.send("You have no playlist import jobs.")
+                        return
+                lines = []
+                for job in own[-5:]:
+                        name = discord.utils.escape_markdown(job["name"])
+                        ready = job.get("ready", 0)
+                        count = len(job["tracks"])
+                        lines.append(
+                                f"**{name}** · {job['stage']} · "
+                                f"{ready}/{count} songs ready"
+                        )
+                        review = [
+                                r.get("title", "Unavailable track")
+                                for r in job["tracks"]
+                                if r.get("review")
+                        ]
+                        if review:
+                                lines.append(
+                                        "Needs review: "
+                                        + ", ".join(
+                                                discord.utils.escape_markdown(t)
+                                                for t in review[:5]
+                                        )
+                                )
+                        if job.get("mutation"):
+                                lines.append(
+                                        "An earlier write needs owner "
+                                        "verification before retrying."
+                                )
+                await ctx.send(
+                        "\n".join(lines)[:1900],
+                        allowed_mentions=discord.AllowedMentions.none(),
                 )
 
         @watch.command(name="link")

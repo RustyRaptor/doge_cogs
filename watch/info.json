@@ -3,10 +3,10 @@
         "GodEmperorDoge"
     ],
     "name": "Watch",
-    "short": "Preload library media or request a movie/TV download.",
-    "description": "Preload library media or request English movie/TV downloads with owner-managed permissions, shared per-user season retention, and download progress.",
+    "short": "Preload media, request downloads and import public Spotify playlists.",
+    "description": "Owner-permitted movie/TV and music acquisition, public Jellyfin playlists, per-user TV season retention and durable completion notifications.",
     "install_msg": "Set the API token with the PRELOAD_BOT_TOKEN environment variable or `[p]set api media_preload token,<token>` (and url,<url> if it isn't http://host.containers.internal:8125).",
-    "end_user_data_statement": "Stores a linked Jellyfin name, download permission, and one selected TV season per show per Discord user. watch unlink removes the name; Red user-data deletion clears all choices and permissions without immediately deleting shared media.",
+    "end_user_data_statement": "Stores a linked Jellyfin name, download permission, TV season choices, playlist source-to-Jellyfin ID mappings, and requester/channel/job metadata. Completed job details expire after seven days; mappings persist for safe reimports. Red user-data deletion removes these records without deleting shared media or public Jellyfin playlists.",
     "requirements": [
         "media-preload-client @ git+https://github.com/RustyRaptor/doge_cogs.git#subdirectory=clients/media-preload-client"
     ],

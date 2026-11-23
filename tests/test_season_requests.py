@@ -467,3 +467,19 @@ async def test_user_data_deletion_forgets_claims_without_deleting_media(
         assert await cog.config.user_from_id(1).tv_seasons() == {}
         assert [f["id"] for f in fake.files] == [101]
         assert fake.calls == []
+
+
+async def test_tv_request_completion_subscription_keeps_the_selected_season(
+        seasons: tuple[Watch, FakeSonarr],
+) -> None:
+        """Catch sending a completion for a different retained user's season."""
+        cog, fake = seasons
+        existing_seasons(fake, [1])
+        ctx = WizardContext(["tv", "0", "2", "1080p"], author=FakeAuthor(id=99))
+        await Watch.request.callback(cog, ctx, query="Dune")
+        jobs = await cog.config.pending_jobs()
+        assert len(jobs) == 1
+        job = next(iter(jobs.values()))
+        assert job["owner"] == 99
+        assert job["kind"] == "tv"
+        assert job["season"] == 2

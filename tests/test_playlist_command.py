@@ -1,0 +1,372 @@
+"""Test playlist permissions, confirmation and job scope."""
+
+import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+from music_helpers import MusicEdge, music_job
+from redbot.core import Config
+from test_background_jobs import Notifications
+from watch_helpers import FakeContext
+
+from watch.watch import Watch
+
+
+@dataclass
+class PlaylistBot:
+        """Discord/service boundaries for command tests."""
+
+        url: str
+        channel: Notifications
+        owner: bool = True
+
+        async def is_owner(self, _user: object) -> bool:
+                """Return the configured owner permission."""
+                return self.owner
+
+        async def get_shared_api_tokens(self, _service: str) -> dict[str, str]:
+                """Route service calls to the HTTP edge."""
+                return {"url": self.url, "api_key": "test-key"}
+
+        def get_channel(self, _channel_id: int) -> Notifications:
+                """Return the notification channel."""
+                return self.channel
+
+
+CommandCase = tuple[Watch, FakeContext, MusicEdge, Notifications, PlaylistBot]
+
+
+@pytest.fixture
+async def playlist_command(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[CommandCase]:
+        """Keep configuration and all service traffic real up to HTTP."""
+
+        class Edge(MusicEdge):
+                async def http(self, request: web.Request) -> web.Response:
+                        if request.path == "/Users":
+                                return web.json_response(
+                                        [
+                                                {
+                                                        "Id": "user-1",
+                                                        "Name": "doge",
+                                                        "Policy": {
+                                                                "IsDisabled": False  # noqa: E501
+                                                        },
+                                                }
+                                        ]
+                                )
+                        return await super().http(request)
+
+        edge = Edge(ready={"Halo", "Enjoy the Silence"})
+        app = web.Application()
+        app.router.add_route("*", "/{path:.*}", edge.http)
+        async with TestServer(app) as server:
+                channel = Notifications()
+                bot = PlaylistBot(str(server.make_url("/")), channel)
+                monkeypatch.setattr(
+                        Config, "get_conf", lambda *_a, **_k: config
+                )
+                cog = Watch(cast("Any", bot))
+                ctx = FakeContext()
+                ctx.channel = SimpleNamespace(id=10)
+                await config.user_from_id(1).jellyfin_user.set("doge")
+                yield cog, ctx, edge, channel, bot
+                await cog.cog_unload()
+
+
+async def test_playlist_permission_precedes_service_calls(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch music download permission bypasses."""
+        cog, ctx, edge, _channel, bot = playlist_command
+        bot.owner = False
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        assert "permission" in ctx.texts[0].lower()
+        assert edge.playlist == {}
+
+
+async def test_playlist_requires_a_linked_jellyfin_account(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch silently choosing an admin playlist owner."""
+        cog, ctx, edge, _channel, _bot = playlist_command
+        await cog.config.user_from_id(1).jellyfin_user.clear()
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        assert "watch link" in ctx.texts[0]
+        assert edge.playlist == {}
+
+
+async def test_playlist_has_username_prefix_and_pings_when_ready(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch acknowledging without importing."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, channel, _bot = playlist_command
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "My mix",
+                        "tracks": music_job()["tracks"],
+                        "partial": False,
+                }
+
+        async def confirm(*_args: object) -> str:
+                return "import"
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", confirm)
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb?si=share",
+        )
+        await asyncio.gather(*cog._pollers)
+        assert edge.playlist["Name"] == "doge - My mix"
+        assert edge.playlist["IsPublic"] is True
+        assert edge.playlist["Ids"] == ["Halo", "Enjoy the Silence", "Halo"]
+        assert len(channel.sent) == 1
+        assert channel.sent[0][0].startswith("<@1>")
+        assert "3/3" in channel.sent[0][0]
+        jobs = await cog.config.pending_jobs()
+        assert len(jobs) == 1
+        assert (
+                next(iter(jobs.values()))["source_id"]
+                == "7kRUsOsraSiY4fyDcu7Bnb"
+        )
+
+
+async def test_public_limit_requires_an_explicit_visible_subset_confirmation(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch silently treating a capped public playlist as complete."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, _channel, _bot = playlist_command
+        prompts = []
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "Long mix",
+                        "tracks": [music_job()["tracks"][0]] * 100,
+                        "partial": True,
+                }
+
+        async def cancel(
+                _ctx: object, text: str, choices: list[tuple[str, str]]
+        ) -> None:
+                prompts.append((text, choices))
+                return
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", cancel)
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        assert "100" in prompts[0][0]
+        assert "incomplete" in prompts[0][0].lower()
+        assert ("visible", "Import visible 100 only") in prompts[0][1]
+        assert edge.playlist == {}
+        assert await cog.config.pending_jobs() == {}
+
+
+async def test_revocation_during_confirmation_does_not_queue_an_import(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch revoked permission after confirmation."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, _channel, bot = playlist_command
+        bot.owner = False
+        await cog.config.user_from_id(1).download_allowed.set(True)
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "My mix",
+                        "tracks": music_job()["tracks"],
+                        "partial": False,
+                }
+
+        async def revoke(*_args: object) -> str:
+                await cog.config.user_from_id(1).download_allowed.clear()
+                return "import"
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", revoke)
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        assert edge.playlist == {}
+        assert await cog.config.pending_jobs() == {}
+        assert any("permission" in text.lower() for text in ctx.texts)
+
+
+async def test_reimport_updates_the_existing_playlist(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch creating another public playlist for the same owner/source."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, _channel, _bot = playlist_command
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "My mix",
+                        "tracks": music_job()["tracks"],
+                        "partial": False,
+                }
+
+        async def confirm(*_args: object) -> str:
+                return "import"
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", confirm)
+        for _ in range(2):
+                await Watch.playlist.callback(
+                        cog,
+                        ctx,
+                        url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+                )
+                await asyncio.gather(*cog._pollers)
+        assert edge.creations == 1
+
+
+async def test_playlist_status_scopes_jobs_and_lists_review_tracks(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch leaking other users' jobs or hiding unresolved song names."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        cog.background()
+        await cog.config.pending_jobs.set(
+                {
+                        "one": {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "Own mix",
+                                "stage": "attention",
+                                "ready": 1,
+                                "tracks": [
+                                        {
+                                                "title": "Missing song",
+                                                "review": "No match",
+                                        },
+                                        {},
+                                ],
+                        },
+                        "two": {
+                                "owner": 2,
+                                "kind": "playlist",
+                                "name": "Other user job",
+                                "stage": "waiting",
+                                "ready": 0,
+                                "tracks": [],
+                        },
+                }
+        )
+        await Watch.playlist_status.callback(cog, ctx)
+        assert "Own mix" in ctx.texts[0]
+        assert "1/2" in ctx.texts[0]
+        assert "Missing song" in ctx.texts[0]
+        assert "Other user" not in ctx.texts[0]
+
+
+async def test_playlist_identity_survives_completed_job_cleanup(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch duplicates after completion records expire."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, _channel, _bot = playlist_command
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "My mix",
+                        "tracks": music_job()["tracks"],
+                        "partial": False,
+                }
+
+        async def confirm(*_args: object) -> str:
+                return "import"
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", confirm)
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        await asyncio.gather(*cog._pollers)
+        await cog.config.pending_jobs.set({})
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        await asyncio.gather(*cog._pollers)
+        assert edge.creations == 1
+
+
+async def test_uncertain_prior_create_requires_verification_before_reimport(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch silently duplicating a prior unacknowledged playlist create."""
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, _channel, _bot = playlist_command
+        cog.background()
+        await cog.config.pending_jobs.set(
+                {
+                        "1:playlist:7kRUsOsraSiY4fyDcu7Bnb": {
+                                "owner": 1,
+                                "notified": True,
+                                "stage": "attention",
+                                "kind": "playlist",
+                                "mutation": "Jellyfin playlist create",
+                        }
+                }
+        )
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "Mix",
+                        "tracks": music_job()["tracks"],
+                        "partial": False,
+                }
+
+        async def confirm(*_args: object) -> str:
+                return "import"
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(cog, "_download_choice", confirm)
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        await asyncio.gather(*cog._pollers)
+        assert edge.creations == 0
+        assert any("verification" in text for text in ctx.texts)

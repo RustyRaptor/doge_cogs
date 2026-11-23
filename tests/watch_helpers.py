@@ -10,6 +10,7 @@ in the bot's image with requirements installed the way Red installs them.
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import discord
@@ -223,6 +224,15 @@ class FakeContext:
         author: FakeAuthor = field(default_factory=FakeAuthor)
         clean_prefix: str = "d!"
         sent: list[FakeMessage] = field(default_factory=list)
+        channel: SimpleNamespace = field(
+                default_factory=lambda: SimpleNamespace(id=10)
+        )
+        message: SimpleNamespace = field(
+                default_factory=lambda: SimpleNamespace(id=1)
+        )
+        command: SimpleNamespace = field(
+                default_factory=lambda: SimpleNamespace(qualified_name="")
+        )
 
         async def send(
                 self,

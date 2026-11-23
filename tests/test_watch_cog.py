@@ -212,7 +212,10 @@ async def test_watch_starts_an_exact_match(
         assert fake.calls_to("POST", "/v1/requests") == [
                 {"itemId": "m1", "requestedBy": "discord:doge"}
         ]
-        assert ctx.texts == ["Preloading The Matrix"]
+        assert ctx.texts == [
+                "Preloading The Matrix",
+                "<@1> Preloading **The Matrix** finished: done.",
+        ]
 
 
 @pytest.mark.parametrize(

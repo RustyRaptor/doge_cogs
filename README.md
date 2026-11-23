@@ -274,9 +274,8 @@ remaining count. Raw release names, private download IDs, filesystem paths and
 upstream error messages are excluded. A failed queue API is reported as
 **temporarily unavailable**.
 
-This adds no background message polling and does not modify ARR Discord webhook
-notifications. Run the command again for an updated snapshot; existing channel
-notifications continue to handle completion events.
+These status replies remain on-demand snapshots. Durable requester completion
+notifications are described below; existing ARR Discord webhooks are unchanged.
 
 ### The client library
 
@@ -309,3 +308,83 @@ the exact requirements from each `info.json`, installed the way Red's Downloader
 operator name broke pictures once), so run it before pushing anything that draws. Set `DOGEBOT_HOST` or
 `DOGEBOT_RED_IMAGE` to test elsewhere; extra arguments go to pytest. Keep `wand` in `pyproject.toml` equal to
 `doge_alignment/info.json`. ImageMagick itself is pinned in dogebot's `containers/red/Containerfile`.
+
+
+### Public Spotify playlists
+
+Run `[p]watch link <your Jellyfin username>` once, then:
+
+```text
+d!importplaylist https://open.spotify.com/playlist/PLAYLIST_ID
+d!importplaylist status
+```
+
+`spotifyimport` is an alias. This deliberately uses a different command name
+from Red Audio's existing `playlist` command. Confirm the import in the
+requester-only menu. The same bot-owner/default and `request allow/revoke`
+permissions apply to music downloads and are checked again before mutations.
+
+Existing, uniquely matching Jellyfin songs are reused. Missing songs are mapped
+from their public Spotify track pages to their albums; only a unique matching
+artist/release group is selected in Lidarr. New artists use the music root's
+current quality/metadata defaults, with other albums and future albums
+unmonitored. Only targeted `AlbumSearch` commands are submitted. No entire
+artist/discography search, tag rewrite or deletion is performed.
+
+The Jellyfin playlist is **public to all users**, named
+**Discord username - Spotify playlist name**, and owned by the linked account.
+The integration's service account has edit access so the bot can update it.
+Source order and duplicate song positions are preserved. Reimporting the same
+source updates the bot-created playlist rather than creating another one.
+Unrelated/manual Jellyfin playlists are never overwritten.
+
+This workflow reads public metadata without a Spotify account token or audio
+previews. Spotify embeds expose at most100songs;100visible songs are explicitly
+labelled potentially incomplete, and the user must confirm **Import visible100
+only**. This imports a snapshot, not an ongoing Spotify account synchronization.
+Private playlists and tracks absent from public metadata require another export
+or a working Spotify API connection. No silent claim of a complete long playlist
+is made.
+
+A saved job continues after cog reloads/restarts. It creates/fills the Jellyfin
+playlist as files arrive, and pings the requester only after every requested
+song is actually available there. Title, credited artist and duration must
+match uniquely. Unresolved tracks produce a **finished with gaps** result,
+not an all-added message; `importplaylist status` lists review titles. A write
+whose acknowledgement is uncertain stops for owner verification, avoiding
+blindly repeated creates/searches. Seven-day unresolved jobs report attention.
+
+Operators configure Red shared API tokens `lidarr` (`url`, `api_key`) and
+`jellyfin` (`url`, `api_key`, `user_id`). Despite the generic field name, Jellyfin's
+`api_key` must be a **user-bound service-device session token** on current
+servers: playlist ACL/update APIs need a real UserId. Use a distinct device ID,
+keep the password outside the bot, and set `user_id` to the service account ID.
+A separate edit share is created when it differs from the linked playlist owner.
+Credentials go into protected Red configuration through secure stdin/admin
+provisioning; never paste secrets into Discord channels or command arguments.
+All private service credentials stay in HTTP headers, separate from public
+Spotify fetching. The bot adds no new service or API listener.
+
+### Completion notifications
+
+Watch preloads and confirmed movie/TV requests now save requester/channel
+subscriptions and ping when processing finishes. Movies require an imported
+file; TV checks the selected aired season's files. An empty queue is never proof
+of completion. Preload partial/failed/cancelled results are described explicitly.
+Notification checks resume on startup and run once per minute; slow music imports
+do not block unrelated completions. Deleted/inaccessible channels fall back to
+a requester DM. Only the requester is mentionable, never roles or everyone.
+Failed Discord delivery is retried. A crash precisely between Discord accepting
+a message and its acknowledgement being saved can still repeat that message.
+Existing ARR Discord webhooks remain independent and unchanged.
+
+Other awaited commands taking at least10seconds, such as alignment guessing or
+baseline rebuilds, ping their requester on command completion/error. Instant
+commands and the already-tracked media commands avoid duplicate generic pings.
+These generic in-flight timers do not resume arbitrary third-party cog operations
+after a restart.
+
+Completed notification/job details expire after seven days. The per-user
+source-to-Jellyfin playlist ID mapping persists for safe reimports. Red user-data
+deletion removes that user's pending jobs, mappings, linked name and download/TV
+choices; it does not delete shared library files or public playlists.
