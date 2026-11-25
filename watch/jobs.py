@@ -226,8 +226,7 @@ class Jobs:
                 return Youtube(
                         binary=os.environ.get("PLAYLIST_YTDLP", "yt-dlp"),
                         folder=os.environ.get(
-                                "PLAYLIST_YOUTUBE_DIR",
-                                "/music/YouTube Imports",
+                                "PLAYLIST_YOUTUBE_DIR", "/music/YouTube"
                         ),
                 )
 
@@ -235,7 +234,7 @@ class Jobs:
         def jellyfin_path(path: str) -> str:
                 """Translate the bot path into the path Jellyfin indexes."""
                 source = os.environ.get(
-                        "PLAYLIST_YOUTUBE_DIR", "/music/YouTube Imports"
+                        "PLAYLIST_YOUTUBE_DIR", "/music/YouTube"
                 ).rstrip("/")
                 target = os.environ.get(
                         "PLAYLIST_YOUTUBE_JELLYFIN_DIR", source

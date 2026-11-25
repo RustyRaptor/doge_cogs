@@ -94,7 +94,7 @@ class Youtube:
                 self,
                 *,
                 binary: str = "yt-dlp",
-                folder: str | os.PathLike[str] = "/music/YouTube Imports",
+                folder: str | os.PathLike[str] = "/music/YouTube",
                 runner: Runner | None = None,
         ) -> None:
                 """Use the deployed yt-dlp unless a test injects a runner."""
@@ -176,6 +176,10 @@ class Youtube:
                                 "--audio-quality",
                                 "0",
                                 "--no-progress",
+                                # The JS challenge solver ships outside the
+                                # package; fetch its current release.
+                                "--remote-components",
+                                "ejs:github",
                                 "--print",
                                 "after_move:filepath",
                                 "--output",
