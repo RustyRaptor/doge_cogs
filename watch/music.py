@@ -68,18 +68,64 @@ def appears_on(artist: str, album: dict[str, Any]) -> bool:
         ) in artist_credits(artist)
 
 
+# A track often resolves to several release groups: the single it was sold as
+# and the album it also appears on. Uncached singles are the ones that stall in
+# TorBox and push Lidarr into grabbing other releases, so a studio album is the
+# safer target and ranks first.
+RELEASE_TYPE_ORDER = {"album": 0, "ep": 1, "single": 2}
+DERIVATIVE_RELEASE_TYPES = frozenset(
+        {
+                "compilation",
+                "live",
+                "remix",
+                "djmix",
+                "mixtapestreet",
+                "soundtrack",
+                "spokenword",
+                "interview",
+                "audiobook",
+                "audiodrama",
+        }
+)
+
+
+def release_rank(album: dict[str, Any]) -> tuple[int, int]:
+        """Rank release groups so a cacheable album beats a single."""
+        kind = normalized(str(album.get("albumType") or ""))
+        secondary = {
+                normalized(str(value))
+                for value in (album.get("secondaryTypes") or [])
+        }
+        derivative = 1 if secondary & DERIVATIVE_RELEASE_TYPES else 0
+        order = RELEASE_TYPE_ORDER.get(kind, len(RELEASE_TYPE_ORDER))
+        return (order, derivative)
+
+
 def choose_album(
         source: dict[str, str], candidates: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-        """Require one canonical release group by the credited artist."""
+        """Pick one canonical release group by the credited artist.
+
+        Title and credit must match exactly. When that still leaves several
+        release groups, prefer the most cacheable one: album before EP, EP
+        before single, and a plain edition before a compilation, live or remix
+        edition. A tie between equally good candidates stays ambiguous so the
+        requester chooses.
+        """
         matches = [
                 a
                 for a in candidates
                 if appears_on(source["artist"], a)
                 and album_title(a["title"]) == album_title(source["title"])
         ]
-        ids = {a["foreignAlbumId"] for a in matches}
-        return matches[0] if len(ids) == 1 else None
+        unique = {a["foreignAlbumId"]: a for a in matches}
+        if not unique:
+                return None
+        if len(unique) == 1:
+                return matches[0]
+        best = min(release_rank(a) for a in unique.values())
+        winners = [a for a in unique.values() if release_rank(a) == best]
+        return winners[0] if len(winners) == 1 else None
 
 
 def find_audio(
