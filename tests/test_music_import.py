@@ -184,6 +184,181 @@ async def test_unresolved_music_does_not_turn_into_an_all_added_result(
                 assert edge.searches == []
 
 
+async def test_one_failed_lookup_does_not_wedge_later_tracks(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch one poisonous album lookup stopping an entire import."""
+        from music_helpers import import_environment
+
+        class Flaky(MusicEdge):
+                failures = 1
+
+                async def arr(self, request: web.Request) -> web.Response:
+                        if (
+                                request.path.endswith("/album/lookup")
+                                and self.failures
+                        ):
+                                self.failures -= 1
+                                return web.Response(status=503)
+                        return await super().arr(request)
+
+        edge = Flaky()
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                saved,
+                _allowed,
+        ):
+                job = music_job()
+                await engine.prepare(job)
+                assert job["tracks"][0].get("attempts") == 1
+                assert "review" not in job["tracks"][0]
+                assert job["tracks"][1]["album_id"] == 7
+                assert job["tracks"][2]["album_id"] == 7
+                assert len(edge.albums) == 1
+                assert saved["tracks"][1]["album_id"] == 7
+                await engine.prepare(job)
+                assert job["tracks"][0]["album_id"] == 7
+                assert "attempts" not in job["tracks"][0]
+
+
+async def test_repeated_lookup_failures_become_review_tracks(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch endless silent retries that never reach the requester."""
+        from music_helpers import import_environment
+
+        edge = MusicEdge(lookup_available=False)
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                saved,
+                _allowed,
+        ):
+                job = music_job()
+                for _ in range(3):
+                        await engine.prepare(job)
+                assert job["stage"] == "waiting"
+                for track in job["tracks"]:
+                        assert track["resolved"] is True
+                        assert track["review"] == "Catalogue lookup failed"
+                assert saved["tracks"][0]["review"] == (
+                        "Catalogue lookup failed"
+                )
+
+
+async def test_a_ready_track_loses_its_review_label(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch stale review titles after the song arrives in Jellyfin."""
+        from music_helpers import import_environment
+
+        edge = MusicEdge(ready={"Halo", "Enjoy the Silence"})
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                job["tracks"][0].update(
+                        resolved=True, review="No unique artist/album match"
+                )
+                await engine.refresh(job)
+                assert "review" not in job["tracks"][0]
+                assert job["stage"] == "complete"
+                assert job["ready"] == 3
+
+
+async def test_manual_album_choice_adds_and_searches_the_album(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch a reviewed song with no way to choose its album."""
+        from music_helpers import import_environment
+
+        edge = MusicEdge()
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                saved,
+                _allowed,
+        ):
+                job = music_job()
+                job["tracks"] = job["tracks"][:1]
+                row = job["tracks"][0]
+                row.update(resolved=True, review="No unique artist/album match")
+                album_id = await engine.assign_album(
+                        job,
+                        row,
+                        {
+                                "title": "Violator",
+                                "foreignAlbumId": "mb-album",
+                                "artist": {
+                                        "artistName": "Depeche Mode",
+                                        "foreignArtistId": "mb-artist",
+                                },
+                                "releases": [],
+                                "images": [],
+                        },
+                )
+                assert album_id == 7
+                assert row["album_id"] == 7
+                assert "review" not in row
+                assert edge.albums[0]["monitored"] is True
+                assert edge.artists[0]["monitored"] is True
+                assert edge.searches == [[7]]
+                assert saved["tracks"][0]["album_id"] == 7
+
+
+async def test_manual_album_choice_monitors_an_existing_album(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch a second copy of an album Lidarr already knows."""
+        from music_helpers import import_environment
+
+        edge = MusicEdge(
+                artists=[
+                        {
+                                "id": 8,
+                                "artistName": "Depeche Mode",
+                                "foreignArtistId": "mb-artist",
+                                "monitored": True,
+                                "monitorNewItems": "none",
+                        }
+                ],
+                albums=[
+                        {
+                                "id": 7,
+                                "artistId": 8,
+                                "title": "Violator",
+                                "foreignAlbumId": "mb-album",
+                                "monitored": False,
+                        }
+                ],
+        )
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                job["tracks"] = job["tracks"][:1]
+                row = job["tracks"][0]
+                row.update(resolved=True, review="No unique artist/album match")
+                album_id = await engine.assign_album(
+                        job,
+                        row,
+                        {
+                                "title": "Violator",
+                                "foreignAlbumId": "mb-album",
+                                "artist": {
+                                        "artistName": "Depeche Mode",
+                                        "foreignArtistId": "mb-artist",
+                                },
+                        },
+                )
+                assert album_id == 7
+                assert len(edge.albums) == 1
+                assert edge.albums[0]["monitored"] is True
+                assert edge.searches == [[7]]
+
+
 async def test_create_id_is_saved_atomically_with_acknowledgement(
         config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

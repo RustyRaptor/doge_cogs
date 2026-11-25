@@ -25,6 +25,7 @@ class MusicEdge:
         ready: set[str] = field(default_factory=set)
         creations: int = 0
         after_lookup: Any = None
+        lookup_available: bool = True
 
         async def http(self, request: web.Request) -> web.Response:
                 """Use the actual API routes and JSON casing."""
@@ -70,6 +71,8 @@ class MusicEdge:
                 if path == "album/lookup":
                         if self.after_lookup:
                                 await self.after_lookup()
+                        if not self.lookup_available:
+                                return web.Response(status=503)
                         return web.json_response(
                                 [
                                         {

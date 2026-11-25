@@ -1,6 +1,7 @@
 """Conservative music identity matching for public playlist imports."""
 
 import asyncio
+import logging
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable
@@ -10,6 +11,12 @@ from typing import Any
 from .errors import PreloadError
 from .jellyfin import Jellyfin
 from .spotify import SpotifyPublic
+
+log = logging.getLogger("red.doge_cogs.watch.music")
+
+# A track whose catalogue lookup keeps failing becomes reviewable rather
+# than retrying silently forever or wedging every later track.
+RETRY_ATTEMPTS = 3
 
 
 def normalized(value: str) -> str:
@@ -138,6 +145,12 @@ class MusicImporter:
                 match = choose_album(source, candidates)
                 if match is None:
                         return None
+                return await self._ensure_album(job, match)
+
+        async def _ensure_album(
+                self, job: dict[str, Any], match: dict[str, Any]
+        ) -> int | None:
+                """Monitor a chosen Lidarr album, adding it when needed."""
                 async with self.lock:
                         existing = await self.arr(
                                 "album",
@@ -229,6 +242,51 @@ class MusicImporter:
                                 )
                         return int(album["id"])
 
+        async def _search_albums(
+                self, job: dict[str, Any], album_ids: list[int]
+        ) -> None:
+                """Submit one targeted Lidarr album search."""
+                if not album_ids:
+                        return
+                await self._write(
+                        job,
+                        "Lidarr selected-album search",
+                        partial(
+                                self.arr,
+                                "command",
+                                body={
+                                        "name": "AlbumSearch",
+                                        "albumIds": album_ids,
+                                },
+                                method="POST",
+                        ),
+                        result_key="search_id",
+                )
+
+        async def assign_album(
+                self,
+                job: dict[str, Any],
+                row: dict[str, Any],
+                match: dict[str, Any],
+        ) -> int:
+                """Monitor a manually chosen album for one reviewed track."""
+                self._certain(job)
+                album_id = await self._ensure_album(job, match)
+                if album_id is None:
+                        msg = "The selected album has no usable artist."
+                        raise PreloadError(msg)
+                row.update(resolved=True, album_id=album_id)
+                row.pop("review", None)
+                row.pop("attempts", None)
+                row.pop("item_id", None)
+                job.setdefault("albums", {})[
+                        f"manual:{row.get('id') or id(row)}"
+                ] = album_id
+                await self._search_albums(job, [album_id])
+                job["stage"] = "waiting"
+                await self.save(job)
+                return album_id
+
         async def _resolve_row(
                 self, job: dict[str, Any], row: dict[str, Any]
         ) -> None:
@@ -238,6 +296,8 @@ class MusicImporter:
                 found = await self.jellyfin.audio(row, job["user_id"])
                 if found:
                         row.update(resolved=True, item_id=found)
+                        row.pop("review", None)
+                        row.pop("attempts", None)
                         await self.save(job)
                         return
                 if not row.get("id"):
@@ -261,39 +321,57 @@ class MusicImporter:
                                 row["review"] = "No unique artist/album match"
                         else:
                                 row["album_id"] = albums[sid]
+                                row.pop("review", None)
+                                row.pop("attempts", None)
                 except ValueError:
                         row["review"] = "Public album metadata unavailable"
                 row["resolved"] = True
                 await self.save(job)
 
         async def prepare(self, job: dict[str, Any]) -> None:
-                """Resolve songs and search only their selected albums."""
+                """Resolve songs and search only their selected albums.
+
+                Waiting jobs revisit unresolved tracks, so a transient
+                catalogue failure heals without a new command.
+                """
                 self._certain(job)
-                if job["stage"] != "preparing":
+                if job["stage"] not in {"preparing", "waiting"}:
                         return
                 albums = job.setdefault("albums", {})
                 for row in job["tracks"]:
                         if row.get("resolved"):
                                 continue
-                        await self._resolve_row(job, row)
+                        try:
+                                await self._resolve_row(job, row)
+                        except PreloadError as exc:
+                                await self._lookup_failed(job, row, exc)
                 ids = sorted({i for i in albums.values() if i is not None})
                 if ids and not job.get("search_id"):
-                        command = await self._write(
-                                job,
-                                "Lidarr selected-album search",
-                                partial(
-                                        self.arr,
-                                        "command",
-                                        body={
-                                                "name": "AlbumSearch",
-                                                "albumIds": ids,
-                                        },
-                                        method="POST",
-                                ),
-                                result_key="search_id",
-                        )
-                        job["search_id"] = command["id"]
+                        await self._search_albums(job, ids)
                 job["stage"] = "waiting"
+                await self.save(job)
+
+        async def _lookup_failed(
+                self,
+                job: dict[str, Any],
+                row: dict[str, Any],
+                exc: PreloadError,
+        ) -> None:
+                """Isolate one failing track and surface it for review."""
+                attempts = int(row.get("attempts", 0)) + 1
+                row["attempts"] = attempts
+                log.warning(
+                        "Playlist track %r lookup failed (%s/%s): %s",
+                        row.get("title"),
+                        attempts,
+                        RETRY_ATTEMPTS,
+                        exc,
+                )
+                if attempts >= RETRY_ATTEMPTS:
+                        row.update(
+                                resolved=True,
+                                review="Catalogue lookup failed",
+                        )
                 await self.save(job)
 
         async def refresh(self, job: dict[str, Any]) -> None:
@@ -311,6 +389,8 @@ class MusicImporter:
                         found = cache[key]
                         if found:
                                 ids.append(found)
+                                row.pop("review", None)
+                                row.pop("attempts", None)
                         elif row.get("review"):
                                 review += 1
                 job["ready"] = len(ids)

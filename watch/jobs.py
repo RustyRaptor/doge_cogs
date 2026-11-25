@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -19,7 +20,7 @@ from .spec import is_finished
 from .spotify import SpotifyPublic
 
 if TYPE_CHECKING:
-        from collections.abc import Awaitable, Callable
+        from collections.abc import AsyncGenerator, Awaitable, Callable
 
         from media_preload_client.models import PreloadRequest
         from redbot.core import commands
@@ -164,7 +165,12 @@ class Jobs:
                                         await self._media(job)
                         except PermissionError:
                                 job["stage"] = "cancelled"
-                        except PreloadError:
+                        except PreloadError as exc:
+                                log.warning(
+                                        "Background job %s stopped: %s",
+                                        key,
+                                        exc,
+                                )
                                 if job.get("mutation"):
                                         job["stage"] = "attention"
                                 else:
@@ -173,8 +179,11 @@ class Jobs:
                 if job["stage"] in {"complete", "attention", "cancelled"}:
                         await self.finish(key, job)
 
-        async def _music(self, key: str, job: dict[str, Any]) -> None:
-                """Run the album importer using the same durable job record."""
+        @asynccontextmanager
+        async def _importer(
+                self, key: str, job: dict[str, Any]
+        ) -> AsyncGenerator[MusicImporter, None]:
+                """Build the album importer for one durable job."""
 
                 async def authorize() -> None:
                         if not await self.cog.can_download(
@@ -193,7 +202,7 @@ class Jobs:
 
                 await authorize()
                 async with httpx.AsyncClient() as client:
-                        engine = MusicImporter(
+                        yield MusicImporter(
                                 partial(self.cog._arr_call, "music"),
                                 Jellyfin(tokens),
                                 SpotifyPublic(client),
@@ -201,8 +210,36 @@ class Jobs:
                                 authorize,
                                 lock=self.cog._acquisition_lock,
                         )
+
+        async def _music(self, key: str, job: dict[str, Any]) -> None:
+                """Run the album importer using the same durable job record."""
+                async with self._importer(key, job) as engine:
                         await engine.prepare(job)
                         await engine.refresh(job)
+
+        async def assign_album(
+                self, key: str, index: int, match: dict[str, Any]
+        ) -> str:
+                """Monitor the chosen album and refresh the playlist."""
+                job = (await self.config.pending_jobs()).get(key)
+                if not job:
+                        msg = "That playlist import no longer exists."
+                        raise PreloadError(msg)
+                if job.get("mutation"):
+                        msg = "An earlier write needs owner verification."
+                        raise PreloadError(msg)
+                if not 0 <= index < len(job.get("tracks", [])):
+                        msg = "That reviewed song is no longer in the import."
+                        raise PreloadError(msg)
+                async with self._importer(key, job) as engine:
+                        await engine.assign_album(
+                                job, job["tracks"][index], match
+                        )
+                job["notified"] = False
+                job.pop("finished", None)
+                job["created"] = datetime.now(UTC).timestamp()
+                await self.save(key, job)
+                return str(match.get("title", "album"))
 
         async def _media(self, job: dict[str, Any]) -> None:
                 """Check imported files rather than an empty queue."""
@@ -270,7 +307,8 @@ class Jobs:
                                         else (
                                                 " Check `importplaylist "
                                                 "status` for tracks needing "
-                                                "review."
+                                                "review and `importplaylist "
+                                                "retry` to try them again."
                                         )
                                 )
                                 return (

@@ -395,6 +395,372 @@ async def test_playlist_verify_clears_mutation_and_allows_reimport(
         assert any("Verified" in text for text in ctx.texts)
 
 
+async def test_playlist_status_names_review_reasons_and_retry(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch review output that neither explains nor resolves gaps."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        cog.background()
+        await cog.config.pending_jobs.set(
+                {
+                        "1:playlist:mine": {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "Own mix",
+                                "stage": "attention",
+                                "ready": 1,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "resolved": True,
+                                                "review": (
+                                                        "No unique "
+                                                        "artist/album match"
+                                                ),
+                                        },
+                                        {
+                                                "title": "Enjoy the Silence",
+                                                "resolved": True,
+                                                "review": (
+                                                        "No unique "
+                                                        "artist/album match"
+                                                ),
+                                        },
+                                        {
+                                                "title": "Policy of Truth",
+                                                "resolved": True,
+                                                "review": "Public album "
+                                                "metadata unavailable",
+                                        },
+                                        {
+                                                "title": "Ready one",
+                                                "resolved": True,
+                                        },
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_status.callback(cog, ctx)
+        text = ctx.texts[0]
+        assert "No unique artist/album match (2)" in text
+        assert "Public album metadata unavailable (1)" in text
+        assert "Halo" in text and "Policy of Truth" in text
+        assert "Ready one" not in text
+        assert "importplaylist retry" in text
+
+
+async def test_playlist_status_keeps_the_retry_hint_on_long_lists(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch truncation cutting off the only instruction that helps."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        cog.background()
+        reasons = [
+                "No unique artist/album match",
+                "Public album metadata unavailable",
+                "Catalogue lookup failed",
+        ]
+        await cog.config.pending_jobs.set(
+                {
+                        f"1:playlist:{i}": {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": f"Long mix {i}",
+                                "stage": "attention",
+                                "ready": 0,
+                                "tracks": [
+                                        {
+                                                "title": "Reviewed song "
+                                                f"{reason[:8]} {n}",
+                                                "resolved": True,
+                                                "review": reason,
+                                        }
+                                        for reason in reasons
+                                        for n in range(10)
+                                ],
+                        }
+                        for i in range(5)
+                }
+        )
+        await Watch.playlist_status.callback(cog, ctx)
+        text = ctx.texts[0]
+        assert len(text) <= 1900
+        assert text.endswith("to try reviewed songs again.")
+        assert "importplaylist retry" in text
+
+
+async def test_retry_recovers_review_tracks_end_to_end(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch a review list with no way to turn it into a finished import."""
+        import watch.jobs as job_module
+        from watch.spotify import SpotifyPublic
+
+        cog, ctx, edge, channel, _bot = playlist_command
+        tracks = music_job()["tracks"][:2]
+
+        async def snapshot(_self: object, _url: str) -> dict[str, Any]:
+                return {
+                        "id": "7kRUsOsraSiY4fyDcu7Bnb",
+                        "name": "My mix",
+                        "tracks": tracks,
+                        "partial": False,
+                }
+
+        async def confirm(*_args: object) -> str:
+                return "import"
+
+        class Catalogue:
+                def __init__(self, *_args: object, **_kwargs: object) -> None:
+                        pass
+
+                async def album_for_track(self, _track: str) -> dict[str, str]:
+                        return {
+                                "id": "spotify-album",
+                                "title": "Violator",
+                                "artist": "Depeche Mode",
+                        }
+
+        monkeypatch.setattr(SpotifyPublic, "snapshot", snapshot)
+        monkeypatch.setattr(job_module, "SpotifyPublic", Catalogue)
+        monkeypatch.setattr(cog, "_download_choice", confirm)
+        edge.ready = set()
+        edge.lookup_available = False
+        await Watch.playlist.callback(
+                cog,
+                ctx,
+                url="https://open.spotify.com/playlist/7kRUsOsraSiY4fyDcu7Bnb",
+        )
+        await asyncio.gather(*cog._pollers)
+        jobs = cog.background()
+        for _ in range(2):
+                await jobs.tick()
+        state = next(iter((await cog.config.pending_jobs()).values()))
+        assert state["stage"] == "attention"
+        assert {track["review"] for track in state["tracks"]} == {
+                "Catalogue lookup failed"
+        }
+        assert len(channel.sent) == 1
+        await Watch.playlist_status.callback(cog, ctx)
+        assert "Catalogue lookup failed (2)" in ctx.texts[-1]
+
+        edge.lookup_available = True
+        await Watch.playlist_retry.callback(cog, ctx)
+        await asyncio.gather(*cog._pollers)
+        assert edge.searches == [[7]]
+        assert edge.creations == 1
+        edge.ready = {"Halo", "Enjoy the Silence"}
+        await jobs.tick()
+        state = next(iter((await cog.config.pending_jobs()).values()))
+        assert state["stage"] == "complete"
+        assert state["ready"] == 2
+        assert all("review" not in track for track in state["tracks"])
+        assert edge.playlist["Ids"] == ["Halo", "Enjoy the Silence"]
+        assert edge.creations == 1
+        assert len(channel.sent) == 2
+        assert "2/2" in channel.sent[-1][0]
+
+
+async def test_match_assigns_the_chosen_album_end_to_end(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch an album choice that never reaches the import."""
+        from datetime import UTC, datetime
+
+        cog, ctx, edge, channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "username": "doge",
+                                "channel": 10,
+                                "user_id": "user-1",
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "partial": False,
+                                "created": datetime.now(UTC).timestamp(),
+                                "tracks": [
+                                        {
+                                                "id": "6kwEU2hLQpMToj1PHsBrOE",
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "duration": 270186,
+                                                "resolved": True,
+                                                "review": "No unique "
+                                                "artist/album match",
+                                        }
+                                ],
+                        }
+                }
+        )
+
+        async def choose(
+                _ctx: object, _text: str, options: list[tuple[str, str]]
+        ) -> str:
+                assert ("mb-album", "Violator (?) · Depeche Mode") in options
+                return "mb-album"
+
+        monkeypatch.setattr(cog, "_download_choice", choose)
+        edge.ready = set()
+        await Watch.playlist_match.callback(cog, ctx, song="Halo")
+        await asyncio.gather(*cog._pollers)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["album_id"] == 7
+        assert "review" not in job["tracks"][0]
+        assert job["notified"] is False
+        assert edge.albums[0]["monitored"] is True
+        assert edge.searches == [[7]]
+        edge.ready = {"Halo"}
+        await cog.background().tick()
+        job = (await cog.config.pending_jobs())[key]
+        assert job["stage"] == "complete"
+        assert len(channel.sent) == 1
+        assert "1/1" in channel.sent[0][0]
+
+
+async def test_match_ignores_another_users_reviewed_song(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch choosing an album for someone else's import."""
+        cog, ctx, edge, _channel, _bot = playlist_command
+        key = "2:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 2,
+                                "kind": "playlist",
+                                "name": "Their mix",
+                                "stage": "attention",
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "resolved": True,
+                                                "review": "No unique "
+                                                "artist/album match",
+                                        }
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_match.callback(cog, ctx, song="Halo")
+        job = (await cog.config.pending_jobs())[key]
+        assert "album_id" not in job["tracks"][0]
+        assert job["tracks"][0]["review"] == "No unique artist/album match"
+        assert edge.albums == []
+        assert any("no reviewed song" in text.lower() for text in ctx.texts)
+
+
+async def test_match_cancelled_album_choice_changes_nothing(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch acting after the requester cancels the album menu."""
+        cog, ctx, edge, _channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "resolved": True,
+                                                "review": "No unique "
+                                                "artist/album match",
+                                        }
+                                ],
+                        }
+                }
+        )
+
+        async def cancel(*_args: object) -> None:
+                return None
+
+        monkeypatch.setattr(cog, "_download_choice", cancel)
+        await Watch.playlist_match.callback(cog, ctx, song="Halo")
+        job = (await cog.config.pending_jobs())[key]
+        assert "album_id" not in job["tracks"][0]
+        assert job["tracks"][0]["review"] == "No unique artist/album match"
+        assert job["notified"] is True
+        assert edge.albums == []
+        assert edge.searches == []
+
+
+async def test_retry_only_touches_the_callers_imports(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch one person retrying another person's review tracks."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        key = "2:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 2,
+                                "kind": "playlist",
+                                "name": "Their mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "resolved": True,
+                                                "review": "No unique "
+                                                "artist/album match",
+                                        }
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_retry.callback(cog, ctx)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["stage"] == "attention"
+        assert job["tracks"][0]["review"] == "No unique artist/album match"
+        assert any("no " in text.lower() for text in ctx.texts)
+
+
+async def test_retry_refuses_an_uncertain_write(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch retrying around a create whose acknowledgement was lost."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "mutation": "Jellyfin playlist create",
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "resolved": True,
+                                                "review": "No unique "
+                                                "artist/album match",
+                                        }
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_retry.callback(cog, ctx)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["mutation"] == "Jellyfin playlist create"
+        assert job["tracks"][0]["review"] == "No unique artist/album match"
+        assert any("verify" in text.lower() for text in ctx.texts)
+
+
 async def test_playlist_verify_is_owner_only(
         playlist_command: CommandCase,
 ) -> None:

@@ -10,6 +10,7 @@ import contextlib
 import logging
 import os
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Literal
 
@@ -93,6 +94,41 @@ def item_label(item: MediaItem) -> str:
 def catalogue_label(title: dict[str, Any]) -> str:
         """Distinguish catalogue remakes by title and year."""
         return f"{title['title']} ({title.get('year', '?')})"
+
+
+def album_choice_label(album: dict[str, Any]) -> str:
+        """Name a Lidarr album choice for a reviewed song."""
+        released = str(album.get("releaseDate") or "")
+        year = released[:4] or "?"
+        artist = album.get("artist", {}).get("artistName", "?")
+        label = f"{album.get('title', 'Album')} ({year}) · {artist}"
+        return discord.utils.escape_markdown(label)[:100]
+
+
+def review_summary(
+        tracks: list[dict[str, Any]], *, limit: int = 5
+) -> list[str]:
+        """Group reviewed songs by reason so the requester can act."""
+        groups: dict[str, list[str]] = {}
+        for row in tracks:
+                reason = row.get("review")
+                if not reason:
+                        continue
+                title = discord.utils.escape_markdown(
+                        str(row.get("title", "Unavailable track"))
+                )
+                groups.setdefault(str(reason), []).append(title)
+        lines = []
+        for reason, titles in groups.items():
+                listed = ", ".join(titles[:limit])
+                more = len(titles) - limit
+                if more > 0:
+                        listed += f" and {more} more"
+                label = discord.utils.escape_markdown(reason)
+                lines.append(
+                        f"Needs review · {label} ({len(titles)}): {listed}"
+                )
+        return lines
 
 
 class OwnerView(discord.ui.View):
@@ -1438,6 +1474,7 @@ class Watch(commands.Cog):
                         await ctx.send("You have no playlist import jobs.")
                         return
                 lines = []
+                needs_retry = False
                 for job in own[-5:]:
                         name = discord.utils.escape_markdown(job["name"])
                         ready = job.get("ready", 0)
@@ -1446,28 +1483,303 @@ class Watch(commands.Cog):
                                 f"**{name}** · {job['stage']} · "
                                 f"{ready}/{count} songs ready"
                         )
-                        review = [
-                                r.get("title", "Unavailable track")
-                                for r in job["tracks"]
-                                if r.get("review")
-                        ]
-                        if review:
-                                lines.append(
-                                        "Needs review: "
-                                        + ", ".join(
-                                                discord.utils.escape_markdown(t)
-                                                for t in review[:5]
-                                        )
-                                )
+                        reviewed = [r for r in job["tracks"] if r.get("review")]
+                        lines.extend(review_summary(reviewed))
                         if job.get("mutation"):
                                 lines.append(
                                         "An earlier write needs owner "
                                         "verification before retrying."
                                 )
+                        if reviewed:
+                                needs_retry = True
+                hint = (
+                        f"Use `{ctx.clean_prefix}importplaylist "
+                        "retry <name>` to try reviewed songs again."
+                        if needs_retry
+                        else ""
+                )
+                body = "\n".join(lines)
+                if hint:
+                        body = body[: 1900 - len(hint) - 1]
                 await ctx.send(
-                        "\n".join(lines)[:1900],
+                        "\n".join(filter(None, (body, hint)))[:1900],
                         allowed_mentions=discord.AllowedMentions.none(),
                 )
+
+        @staticmethod
+        def _reviewed_tracks(
+                user_id: int,
+                query: str,
+                pending: dict[str, Any],
+        ) -> list[tuple[str, int, dict[str, Any], dict[str, Any]]]:
+                """Find the caller's reviewed songs matching a query."""
+                found = []
+                for key, job in pending.items():
+                        if (
+                                job.get("owner") != user_id
+                                or job.get("kind") != "playlist"
+                        ):
+                                continue
+                        for index, track in enumerate(job.get("tracks", [])):
+                                haystack = (
+                                        f"{track.get('title', '')} "
+                                        f"{track.get('artist', '')}"
+                                ).casefold()
+                                if track.get("review") and query in haystack:
+                                        found.append((key, index, job, track))
+                return found
+
+        @staticmethod
+        def _review_label(job: dict[str, Any], track: dict[str, Any]) -> str:
+                """Describe one reviewed song in a menu."""
+                title = track.get("title", "?")
+                artist = track.get("artist", "?")
+                name = job.get("name", "playlist")
+                return f"{title} · {artist} · {name}"
+
+        async def _lidarr_album(
+                self, ctx: commands.Context, track: dict[str, Any]
+        ) -> dict[str, Any] | None:
+                """Ask the requester which Lidarr album a song belongs to."""
+                title = discord.utils.escape_markdown(
+                        str(track.get("title", "song"))
+                )
+                term = (
+                        f"{track.get('title', '')} {track.get('artist', '')}"
+                ).strip()
+                try:
+                        candidates = await self._arr_call(
+                                "music", "album/lookup", params={"term": term}
+                        )
+                except PreloadError as exc:
+                        await ctx.send(
+                                f"Lidarr lookup failed: {exc}",
+                                allowed_mentions=(
+                                        discord.AllowedMentions.none()
+                                ),
+                        )
+                        return None
+                albums: dict[str, dict[str, Any]] = {}
+                for album in candidates or []:
+                        if isinstance(album, dict) and album.get(
+                                "foreignAlbumId"
+                        ):
+                                albums.setdefault(
+                                        album["foreignAlbumId"], album
+                                )
+                if not albums:
+                        await ctx.send(
+                                f"Lidarr has no album match for **{title}**.",
+                                allowed_mentions=(
+                                        discord.AllowedMentions.none()
+                                ),
+                        )
+                        return None
+                choice = await self._download_choice(
+                        ctx,
+                        f"Which album contains **{title}**?",
+                        [
+                                (album_id, album_choice_label(album))
+                                for album_id, album in list(albums.items())[:24]
+                        ],
+                )
+                return None if choice is None else albums[choice]
+
+        @playlist.command(name="match")
+        async def playlist_match(
+                self, ctx: commands.Context, *, song: str = ""
+        ) -> None:
+                """Choose the Lidarr album for a reviewed song."""
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is required; ask "
+                                "the owner to use `request allow`."
+                        )
+                        return
+                query = song.strip().casefold()
+                if len(query) < 2:  # noqa: PLR2004 (a useful search)
+                        await ctx.send(
+                                f"Use `{ctx.clean_prefix}importplaylist "
+                                "match <song title>`."
+                        )
+                        return
+                jobs = self.background()
+                found = self._reviewed_tracks(
+                        ctx.author.id,
+                        query,
+                        await self.config.pending_jobs(),
+                )
+                if not found:
+                        await ctx.send(
+                                f"No reviewed song matches `{song.strip()}`."
+                        )
+                        return
+                choice = found[0]
+                if len(found) > 1:
+                        pick = await self._download_choice(
+                                ctx,
+                                f"{len(found)} reviewed songs match:",
+                                [
+                                        (
+                                                str(i),
+                                                self._review_label(job, track),
+                                        )
+                                        for i, (_key, _index, job, track) in (
+                                                enumerate(found[:24])
+                                        )
+                                ],
+                        )
+                        if pick is None:
+                                return
+                        choice = found[int(pick)]
+                key, index, job, track = choice
+                if job.get("mutation"):
+                        await ctx.send(
+                                "An earlier write needs owner verification "
+                                "before matching. Use `importplaylist verify`."
+                        )
+                        return
+                if key in jobs.active:
+                        await ctx.send(
+                                "That import is still being checked; try "
+                                "again in a minute."
+                        )
+                        return
+                album = await self._lidarr_album(ctx, track)
+                if album is None:
+                        return
+                title = discord.utils.escape_markdown(
+                        str(track.get("title", "song"))
+                )
+                try:
+                        name = await jobs.assign_album(key, index, album)
+                except (PreloadError, PermissionError) as exc:
+                        await ctx.send(f"Couldn't assign that album: {exc}")
+                        return
+                await ctx.send(
+                        f"Monitoring **{discord.utils.escape_markdown(name)}** "
+                        f"in Lidarr. **{title}** will join the playlist when "
+                        "it downloads; `importplaylist status` tracks it.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                self._spawn(jobs.run_once(key))
+
+        @playlist.command(name="retry")
+        async def playlist_retry(
+                self, ctx: commands.Context, *, target: str = ""
+        ) -> None:
+                """Retry songs from your imports that needed review.
+
+                Reviewed or unresolved songs are looked up again; songs whose
+                albums are already matched keep their progress.
+                """
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is required; ask "
+                                "the owner to use `request allow`."
+                        )
+                        return
+                jobs = self.background()
+                needle = target.strip().casefold()
+                reply = ""
+                started = False
+                async with self.config.pending_jobs() as pending:
+                        own = [
+                                (key, job)
+                                for key, job in pending.items()
+                                if job.get("owner") == ctx.author.id
+                                and job.get("kind") == "playlist"
+                                and any(
+                                        not track.get("resolved")
+                                        or track.get("review")
+                                        for track in job.get("tracks", [])
+                                )
+                                and (
+                                        not needle
+                                        or needle
+                                        in str(job.get("name", "")).casefold()
+                                )
+                        ]
+                        if not own:
+                                reply = "No songs in your imports need review."
+                        elif len(own) > 1:
+                                names = [
+                                        discord.utils.escape_markdown(
+                                                str(job.get("name", key))
+                                        )
+                                        for key, job in own[:10]
+                                ]
+                                listing = "\n".join(
+                                        f"- **{name}**" for name in names
+                                )
+                                reply = (
+                                        "Which import? Name one: "
+                                        f"`{ctx.clean_prefix}importplaylist "
+                                        f"retry <name>`\n{listing}"
+                                )
+                        else:
+                                key, job = own[0]
+                                if job.get("mutation"):
+                                        reply = (
+                                                "An earlier write needs owner "
+                                                "verification before "
+                                                "retrying. Use "
+                                                "`importplaylist verify`."
+                                        )
+                                elif key in jobs.active:
+                                        reply = (
+                                                "That import is still being "
+                                                "checked; try again in a "
+                                                "minute."
+                                        )
+                                else:
+                                        rows = [
+                                                track
+                                                for track in job["tracks"]
+                                                if not track.get("resolved")
+                                                or track.get("review")
+                                        ]
+                                        for row in rows:
+                                                for field in (
+                                                        "review",
+                                                        "resolved",
+                                                        "album_id",
+                                                        "item_id",
+                                                        "attempts",
+                                                ):
+                                                        row.pop(field, None)
+                                        job["albums"] = {
+                                                album: match
+                                                for album, match in (
+                                                        job.get("albums") or {}
+                                                ).items()
+                                                if match is not None
+                                        }
+                                        job["stage"] = "preparing"
+                                        job["notified"] = False
+                                        job.pop("finished", None)
+                                        job["created"] = datetime.now(
+                                                UTC
+                                        ).timestamp()
+                                        name = discord.utils.escape_markdown(
+                                                str(
+                                                        job.get(
+                                                                "name",
+                                                                "playlist",
+                                                        )
+                                                )
+                                        )
+                                        reply = (
+                                                f"Retrying {len(rows)} song(s) "
+                                                f"in **{name}**..."
+                                        )
+                                        started = True
+                await ctx.send(
+                        reply,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                if started:
+                        self._spawn(jobs.run_once(key))
 
         @playlist.command(name="verify")
         @commands.is_owner()

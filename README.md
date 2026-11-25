@@ -350,9 +350,23 @@ A saved job continues after cog reloads/restarts. It creates/fills the Jellyfin
 playlist as files arrive, and pings the requester only after every requested
 song is actually available there. Title, credited artist and duration must
 match uniquely. Unresolved tracks produce a **finished with gaps** result,
-not an all-added message; `importplaylist status` lists review titles. A write
-whose acknowledgement is uncertain stops for owner verification, avoiding
-blindly repeated creates/searches. Seven-day unresolved jobs report attention.
+not an all-added message.
+
+Songs that cannot be matched become **review** tracks with a reason: no unique
+artist/album match, unavailable public album metadata, an unavailable source
+track, or a catalogue lookup that failed three times. A single failing lookup
+no longer stalls every later song in the import. `importplaylist status` groups
+reviewed songs by reason, and `importplaylist retry [playlist name]` looks up
+reviewed or unresolved songs again without disturbing matched albums; if the
+catalogue or Lidarr has caught up since, the import finishes and pings normally.
+`importplaylist match <song>` searches Lidarr by title and artist and lets the
+requester pick the album from a select menu; it monitors an existing album or
+adds the missing one, submits a targeted `AlbumSearch`, and the playlist fills
+when the album downloads. Both commands only see the caller's own imports.
+
+A write whose acknowledgement is uncertain stops for owner verification,
+avoiding blindly repeated creates/searches. Seven-day unresolved jobs report
+attention.
 
 Operators configure Red shared API tokens `lidarr` (`url`, `api_key`) and
 `jellyfin` (`url`, `api_key`, `user_id`). Despite the generic field name, Jellyfin's
