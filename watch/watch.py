@@ -1469,6 +1469,70 @@ class Watch(commands.Cog):
                         allowed_mentions=discord.AllowedMentions.none(),
                 )
 
+        @playlist.command(name="verify")
+        @commands.is_owner()
+        async def playlist_verify(
+                self, ctx: commands.Context, *, target: str = ""
+        ) -> None:
+                """Bot owner: clear an uncertain playlist write."""
+                if not await self.bot.is_owner(ctx.author):
+                        await ctx.send(
+                                "Only the bot owner can verify playlist writes."
+                        )
+                        return
+                async with self.config.pending_jobs() as jobs:
+                        flagged = [
+                                (key, job)
+                                for key, job in jobs.items()
+                                if job.get("kind") == "playlist"
+                                and job.get("mutation")
+                        ]
+                        if not flagged:
+                                await ctx.send(
+                                        "No playlist jobs need owner "
+                                        "verification."
+                                )
+                                return
+                        needle = target.strip().lower()
+                        matches = [
+                                (key, job)
+                                for key, job in flagged
+                                if not needle
+                                or needle in key.lower()
+                                or needle in str(job.get("name", "")).lower()
+                        ]
+                        if not matches:
+                                await ctx.send(
+                                        "No flagged playlist job matched "
+                                        f"`{target.strip()}`."
+                                )
+                                return
+                        if len(matches) > 1:
+                                listing = "\n".join(
+                                        f"- `{key}` "
+                                        f"({job.get('name', 'unknown')}): "
+                                        f"{job.get('mutation')}"
+                                        for key, job in matches[:10]
+                                )
+                                await ctx.send(
+                                        "Multiple playlist jobs need "
+                                        "verification; name one:\n"
+                                        f"{listing}",
+                                        allowed_mentions=(
+                                                discord.AllowedMentions.none()
+                                        ),
+                                )
+                                return
+                        key, job = matches[0]
+                        action = job.pop("mutation", None)
+                        name = discord.utils.escape_markdown(
+                                str(job.get("name", key))
+                        )
+                await ctx.send(
+                        f"Verified **{name}**: cleared `{action}`. "
+                        "You can reimport or resume the playlist."
+                )
+
         @watch.command(name="link")
         async def watch_link(self, ctx: commands.Context, *, name: str) -> None:
                 """Link your Jellyfin user name, for "next" requests."""

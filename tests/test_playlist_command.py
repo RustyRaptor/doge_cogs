@@ -370,3 +370,50 @@ async def test_uncertain_prior_create_requires_verification_before_reimport(
         await asyncio.gather(*cog._pollers)
         assert edge.creations == 0
         assert any("verification" in text for text in ctx.texts)
+
+
+async def test_playlist_verify_clears_mutation_and_allows_reimport(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch a dead end after an uncertain playlist write."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "notified": True,
+                                "stage": "attention",
+                                "kind": "playlist",
+                                "mutation": "Jellyfin playlist create",
+                        }
+                }
+        )
+        await Watch.playlist_verify.callback(cog, ctx)
+        job = (await cog.config.pending_jobs())[key]
+        assert "mutation" not in job
+        assert any("Verified" in text for text in ctx.texts)
+
+
+async def test_playlist_verify_is_owner_only(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch a non-owner clearing an uncertain write."""
+        cog, ctx, _edge, _channel, bot = playlist_command
+        bot.owner = False
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "notified": True,
+                                "stage": "attention",
+                                "kind": "playlist",
+                                "mutation": "Jellyfin playlist create",
+                        }
+                }
+        )
+        await Watch.playlist_verify.callback(cog, ctx)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["mutation"] == "Jellyfin playlist create"
+        assert any("Only the bot owner" in text for text in ctx.texts)
