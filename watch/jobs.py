@@ -16,6 +16,7 @@ import httpx
 from .errors import PreloadError
 from .jellyfin import Jellyfin
 from .music import MusicImporter
+from .musicbrainz import MusicBrainz
 from .notify import completion_ping
 from .spec import is_finished
 from .spotify import SpotifyPublic
@@ -211,6 +212,7 @@ class Jobs:
                                 save,
                                 authorize,
                                 lock=self.cog._acquisition_lock,
+                                musicbrainz=MusicBrainz(client),
                         )
 
         async def _music(self, key: str, job: dict[str, Any]) -> None:

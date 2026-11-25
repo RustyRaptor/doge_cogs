@@ -6,11 +6,16 @@ import re
 import unicodedata
 from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import httpx
 
 from .errors import PreloadError
 from .jellyfin import Jellyfin
 from .spotify import SpotifyPublic
+
+if TYPE_CHECKING:
+        from .musicbrainz import MusicBrainz
 
 log = logging.getLogger("red.doge_cogs.watch.music")
 
@@ -102,7 +107,9 @@ def release_rank(album: dict[str, Any]) -> tuple[int, int]:
 
 
 def choose_album(
-        source: dict[str, str], candidates: list[dict[str, Any]]
+        source: dict[str, str],
+        candidates: list[dict[str, Any]],
+        holding: set[str] | None = None,
 ) -> dict[str, Any] | None:
         """Pick one canonical release group by the credited artist.
 
@@ -118,6 +125,14 @@ def choose_album(
                 if appears_on(source["artist"], a)
                 and album_title(a["title"]) == album_title(source["title"])
         ]
+        if holding:
+                # A release group MusicBrainz says holds the track beats
+                # one that only outranks it on type.
+                held = [
+                        a for a in matches if a["foreignAlbumId"] in holding
+                ]
+                if held:
+                        matches = held
         unique = {a["foreignAlbumId"]: a for a in matches}
         if not unique:
                 return None
@@ -159,6 +174,7 @@ class MusicImporter:
                 authorize: Callable[[], Awaitable[None]],
                 *,
                 lock: asyncio.Lock | None = None,
+                musicbrainz: "MusicBrainz | None" = None,
         ) -> None:
                 """Inject service clients, persistence and permissions."""
                 self.arr = arr
@@ -167,6 +183,7 @@ class MusicImporter:
                 self.save = save
                 self.authorize = authorize
                 self.lock = lock if lock is not None else asyncio.Lock()
+                self.musicbrainz = musicbrainz
 
         @staticmethod
         def _certain(job: dict[str, Any]) -> None:
@@ -218,14 +235,60 @@ class MusicImporter:
                         await self.save(job)
                 return bool(cache[key])
 
+        async def _groups(
+                self, artist: str, title: str
+        ) -> list[dict[str, Any]]:
+                """Ask MusicBrainz without letting its failure reach the job."""
+                if self.musicbrainz is None:
+                        return []
+                try:
+                        groups = await self.musicbrainz.release_groups(
+                                artist, title
+                        )
+                except (httpx.HTTPError, ValueError, RuntimeError):
+                        return []
+                return [
+                        group
+                        for group in groups or []
+                        if isinstance(group, dict)
+                        and isinstance(group.get("foreignAlbumId"), str)
+                        and appears_on(artist, group)
+                ]
+
+        async def _catalog_album(
+                self, groups: list[dict[str, Any]]
+        ) -> dict[str, Any] | None:
+                """Find the release group MusicBrainz named in the catalog."""
+                for group in sorted(groups, key=release_rank):
+                        found = await self.arr(
+                                "album",
+                                params={
+                                        "foreignAlbumId": group[
+                                                "foreignAlbumId"
+                                        ]
+                                },
+                        )
+                        if found and found[0].get("artistId"):
+                                return found[0]
+                return None
+
         async def _album(
-                self, job: dict[str, Any], source: dict[str, str]
+                self,
+                job: dict[str, Any],
+                source: dict[str, str],
+                track_title: str | None = None,
         ) -> tuple[int | None, str]:
                 """Monitor one album, or name why no album was chosen."""
                 candidates = await self.arr(
                         "album/lookup", params={"term": source["title"]}
                 )
-                match = choose_album(source, candidates)
+                groups = await self._groups(
+                        source["artist"], track_title or source["title"]
+                )
+                holding = {g["foreignAlbumId"] for g in groups}
+                match = choose_album(source, candidates or [], holding)
+                if match is None and groups:
+                        match = await self._catalog_album(groups)
                 if match is not None:
                         return await self._ensure_album(job, match), ""
                 if not await self._artist_known(job, source["artist"]):
@@ -416,7 +479,7 @@ class MusicImporter:
                         sid = details["id"]
                         if sid not in albums or albums[sid] is None:
                                 album_id, reason = await self._album(
-                                        job, details
+                                        job, details, row.get("title")
                                 )
                                 albums[sid] = album_id
                         else:
