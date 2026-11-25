@@ -18,6 +18,12 @@ log = logging.getLogger("red.doge_cogs.watch.music")
 # than retrying silently forever or wedging every later track.
 RETRY_ATTEMPTS = 3
 
+# The requester can act on these differently: the first artist is absent from
+# MusicBrainz, so only a YouTube copy (or skipping) can help.
+MISSING_ARTIST = "Artist not in MusicBrainz"
+NO_ALBUM = "No unique artist/album match"
+CREDITS = re.compile(r"\s*(?:,|&|feat\.?|featuring)\s*", re.IGNORECASE)
+
 
 def normalized(value: str) -> str:
         """Normalize punctuation and Unicode presentation."""
@@ -46,15 +52,30 @@ def album_title(value: str) -> str:
         return normalized(value)
 
 
+def artist_credits(artist: str) -> set[str]:
+        """Split Spotify's credited-artist list into comparable names."""
+        return {
+                name
+                for name in (normalized(part) for part in CREDITS.split(artist))
+                if name
+        }
+
+
+def appears_on(artist: str, album: dict[str, Any]) -> bool:
+        """Require the album to be credited to the Spotify artist."""
+        return normalized(
+                album.get("artist", {}).get("artistName", "")
+        ) in artist_credits(artist)
+
+
 def choose_album(
         source: dict[str, str], candidates: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-        """Require one canonical release group with matching artist/title."""
+        """Require one canonical release group by the credited artist."""
         matches = [
                 a
                 for a in candidates
-                if normalized(a.get("artist", {}).get("artistName", ""))
-                == normalized(source["artist"].split(",")[0])
+                if appears_on(source["artist"], a)
                 and album_title(a["title"]) == album_title(source["title"])
         ]
         ids = {a["foreignAlbumId"] for a in matches}
@@ -135,17 +156,35 @@ class MusicImporter:
                 await self.save(job)
                 return result
 
+        async def _artist_known(self, job: dict[str, Any], artist: str) -> bool:
+                """Check MusicBrainz once per artist and remember the answer."""
+                name = artist.split(",")[0].strip()
+                cache = job.setdefault("artist_checks", {})
+                key = normalized(name)
+                if key not in cache:
+                        found = await self.arr(
+                                "artist/lookup", params={"term": name}
+                        )
+                        cache[key] = any(
+                                normalized(a.get("artistName", "")) == key
+                                for a in found or []
+                        )
+                        await self.save(job)
+                return bool(cache[key])
+
         async def _album(
                 self, job: dict[str, Any], source: dict[str, str]
-        ) -> int | None:
-                """Monitor one album without changing other choices."""
+        ) -> tuple[int | None, str]:
+                """Monitor one album, or name why no album was chosen."""
                 candidates = await self.arr(
                         "album/lookup", params={"term": source["title"]}
                 )
                 match = choose_album(source, candidates)
-                if match is None:
-                        return None
-                return await self._ensure_album(job, match)
+                if match is not None:
+                        return await self._ensure_album(job, match), ""
+                if not await self._artist_known(job, source["artist"]):
+                        return None, MISSING_ARTIST
+                return None, NO_ALBUM
 
         async def _ensure_album(
                 self, job: dict[str, Any], match: dict[str, Any]
@@ -293,6 +332,20 @@ class MusicImporter:
                 """Resolve one source row without losing saved progress."""
                 albums = job.setdefault("albums", {})
                 metadata = job.setdefault("track_albums", {})
+                if row.get("youtube_path"):
+                        item = await self.jellyfin.audio_at(
+                                str(row["youtube_path"]), job["user_id"]
+                        )
+                        if item:
+                                row.update(
+                                        resolved=True,
+                                        item_id=item,
+                                        youtube_item=item,
+                                )
+                                row.pop("review", None)
+                                row.pop("attempts", None)
+                                await self.save(job)
+                        return
                 found = await self.jellyfin.audio(row, job["user_id"])
                 if found:
                         row.update(resolved=True, item_id=found)
@@ -315,17 +368,38 @@ class MusicImporter:
                                 )
                                 metadata[row["id"]] = details
                         sid = details["id"]
-                        if sid not in albums:
-                                albums[sid] = await self._album(job, details)
-                        if albums[sid] is None:
-                                row["review"] = "No unique artist/album match"
+                        if sid not in albums or albums[sid] is None:
+                                album_id, reason = await self._album(
+                                        job, details
+                                )
+                                albums[sid] = album_id
                         else:
-                                row["album_id"] = albums[sid]
+                                album_id, reason = albums[sid], ""
+                        if album_id is None:
+                                row["review"] = reason or NO_ALBUM
+                        else:
+                                row["album_id"] = album_id
                                 row.pop("review", None)
                                 row.pop("attempts", None)
                 except ValueError:
                         row["review"] = "Public album metadata unavailable"
                 row["resolved"] = True
+                await self.save(job)
+
+        async def skip(self, job: dict[str, Any], row: dict[str, Any]) -> None:
+                """Leave one song out permanently, at the requester's choice."""
+                self._certain(job)
+                row.update(resolved=True, skipped=True)
+                for field in (
+                        "review",
+                        "attempts",
+                        "album_id",
+                        "item_id",
+                        "youtube_path",
+                        "youtube_item",
+                ):
+                        row.pop(field, None)
+                job["stage"] = "waiting"
                 await self.save(job)
 
         async def prepare(self, job: dict[str, Any]) -> None:
@@ -374,29 +448,13 @@ class MusicImporter:
                         )
                 await self.save(job)
 
-        async def refresh(self, job: dict[str, Any]) -> None:
-                """Publish songs and verify complete availability."""
-                self._certain(job)
-                ids = []
-                review = 0
-                cache = {}
-                for row in job["tracks"]:
-                        key = (row.get("id"), row["title"], row["artist"])
-                        if key not in cache:
-                                cache[key] = await self.jellyfin.audio(
-                                        row, job["user_id"]
-                                )
-                        found = cache[key]
-                        if found:
-                                ids.append(found)
-                                row.pop("review", None)
-                                row.pop("attempts", None)
-                        elif row.get("review"):
-                                review += 1
-                job["ready"] = len(ids)
-                if not job.get("playlist_id") and (
-                        ids or review < len(job["tracks"])
-                ):
+        async def _publish(
+                self, job: dict[str, Any], ids: list[str], review: int
+        ) -> None:
+                """Create the playlist or replace its contents in order."""
+                if not job.get("playlist_id"):
+                        if not ids and review >= len(job["tracks"]):
+                                return
                         name = f"{job['username']} - {job['name']}"[:250]
                         job["playlist_id"] = await self._write(
                                 job,
@@ -410,17 +468,43 @@ class MusicImporter:
                                 result_key="playlist_id",
                         )
                         job["playlist_items"] = ids
-                elif job.get("playlist_id") and ids != job.get(
-                        "playlist_items"
-                ):
-                        await self.authorize()
-                        await self.jellyfin.update_playlist(
-                                job["playlist_id"], ids
-                        )
-                        job["playlist_items"] = ids
+                        return
+                if ids == job.get("playlist_items"):
+                        return
+                await self.authorize()
+                await self.jellyfin.update_playlist(job["playlist_id"], ids)
+                job["playlist_items"] = ids
+
+        async def refresh(self, job: dict[str, Any]) -> None:
+                """Publish songs and verify complete availability."""
+                self._certain(job)
+                ids = []
+                review = 0
+                skipped = 0
+                cache: dict[tuple[Any, ...], str | None] = {}
+                for row in job["tracks"]:
+                        if row.get("youtube_item"):
+                                ids.append(str(row["youtube_item"]))
+                                continue
+                        key = (row.get("id"), row["title"], row["artist"])
+                        if key not in cache:
+                                cache[key] = await self.jellyfin.audio(
+                                        row, job["user_id"]
+                                )
+                        found = cache[key]
+                        if found:
+                                ids.append(found)
+                                row.pop("review", None)
+                                row.pop("attempts", None)
+                        elif row.get("skipped"):
+                                skipped += 1
+                        elif row.get("review"):
+                                review += 1
+                job["ready"] = len(ids)
+                await self._publish(job, ids, review)
                 if len(ids) == len(job["tracks"]):
                         job["stage"] = "complete"
-                elif len(ids) + review == len(job["tracks"]):
+                elif len(ids) + review + skipped == len(job["tracks"]):
                         job["stage"] = "attention"
                 else:
                         job["stage"] = "waiting"

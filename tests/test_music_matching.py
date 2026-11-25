@@ -42,6 +42,52 @@ def test_only_one_canonical_album_for_the_credited_artist_is_selected() -> None:
         )
 
 
+def test_album_matches_never_come_from_another_artist() -> None:
+        """Catch adopting a tribute or cover album with the right title."""
+        from watch.music import choose_album
+
+        candidates = [
+                {
+                        "id": 4,
+                        "foreignAlbumId": "tribute",
+                        "title": "Violator",
+                        "artist": {"artistName": "Some Tribute Band"},
+                }
+        ]
+        assert (
+                choose_album(
+                        {"title": "Violator", "artist": "Depeche Mode"},
+                        candidates,
+                )
+                is None
+        )
+        candidates.append(
+                {
+                        "id": 7,
+                        "foreignAlbumId": "right",
+                        "title": "Violator",
+                        "artist": {"artistName": "Depeche Mode"},
+                }
+        )
+        assert (
+                choose_album(
+                        {"title": "Violator", "artist": "Depeche Mode"},
+                        candidates,
+                )
+                == candidates[1]
+        )
+
+
+def test_a_featured_artist_still_counts_as_a_credited_artist() -> None:
+        """Catch dropping collaborations that Spotify credits by name."""
+        from watch.music import appears_on
+
+        album = {"artist": {"artistName": "Depeche Mode"}}
+        assert appears_on("Depeche Mode, Martin Gore", album)
+        assert appears_on("Depeche Mode", album)
+        assert not appears_on("Beyoncé", album)
+
+
 def test_audio_match_requires_unique_artist_title_and_length() -> None:
         """Reject wrong artists, versions and ambiguity."""
         from watch.music import find_audio

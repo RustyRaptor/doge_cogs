@@ -245,6 +245,155 @@ async def test_repeated_lookup_failures_become_review_tracks(
                 )
 
 
+async def test_an_artist_missing_from_musicbrainz_is_named(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch blaming album ambiguity for an artist the catalogue lacks."""
+        from music_helpers import import_environment
+
+        class UnknownArtist(MusicEdge):
+                async def arr(self, request: web.Request) -> web.Response:
+                        if request.path.endswith("/album/lookup"):
+                                return web.json_response([])
+                        return await super().arr(request)
+
+        edge = UnknownArtist(artist_missing=True)
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                await engine.prepare(job)
+                assert {t["review"] for t in job["tracks"]} == {
+                        "Artist not in MusicBrainz"
+                }
+                assert edge.albums == []
+
+
+async def test_a_known_artist_without_its_album_stays_generic(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch calling every missing album an unknown artist."""
+        from music_helpers import import_environment
+
+        class NoAlbum(MusicEdge):
+                async def arr(self, request: web.Request) -> web.Response:
+                        if request.path.endswith("/album/lookup"):
+                                return web.json_response([])
+                        return await super().arr(request)
+
+        edge = NoAlbum()
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                await engine.prepare(job)
+                assert {t["review"] for t in job["tracks"]} == {
+                        "No unique artist/album match"
+                }
+
+
+async def test_another_artists_album_is_never_monitored(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch adopting a same-titled tribute album for the artist."""
+        from music_helpers import import_environment
+
+        class Tribute(MusicEdge):
+                async def arr(self, request: web.Request) -> web.Response:
+                        if request.path.endswith("/album/lookup"):
+                                return web.json_response(
+                                        [
+                                                {
+                                                        "title": "Violator",
+                                                        "foreignAlbumId": (
+                                                                "tribute"
+                                                        ),
+                                                        "artist": {
+                                                                "artistName": "Tribute",  # noqa: E501
+                                                                "foreignArtistId": "other",  # noqa: E501
+                                                        },
+                                                        "releases": [],
+                                                        "images": [],
+                                                }
+                                        ]
+                                )
+                        return await super().arr(request)
+
+        edge = Tribute()
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                await engine.prepare(job)
+                assert {t["review"] for t in job["tracks"]} == {
+                        "No unique artist/album match"
+                }
+                assert edge.albums == []
+                assert edge.searches == []
+
+
+async def test_a_skipped_song_settles_the_import(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch skipped songs counting as review forever."""
+        from music_helpers import import_environment
+
+        edge = MusicEdge()
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                _saved,
+                _allowed,
+        ):
+                job = music_job()
+                job["tracks"] = job["tracks"][:1]
+                row = job["tracks"][0]
+                row.update(resolved=True, review="Artist not in MusicBrainz")
+                await engine.skip(job, row)
+                assert row["skipped"] is True
+                assert "review" not in row
+                await engine.refresh(job)
+                assert job["stage"] == "attention"
+                assert job["ready"] == 0
+
+
+async def test_a_youtube_file_is_attached_by_its_jellyfin_item(
+        config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch searching by Spotify duration for a longer video file."""
+        from music_helpers import import_environment
+
+        path = "/mnt/MediaDisk/Music/YouTube Imports/Depeche Mode/Halo.opus"
+        edge = MusicEdge(path_items={path: "yt-1"})
+        async with import_environment(config, monkeypatch, edge) as (
+                engine,
+                saved,
+                _allowed,
+        ):
+                job = music_job()
+                job["tracks"] = job["tracks"][:1]
+                row = job["tracks"][0]
+                row.update(
+                        resolved=False,
+                        youtube_path=path,
+                        review="Artist not in MusicBrainz",
+                )
+                await engine.prepare(job)
+                assert row["item_id"] == "yt-1"
+                assert row["resolved"] is True
+                assert "review" not in row
+                assert saved["tracks"][0]["item_id"] == "yt-1"
+                await engine.refresh(job)
+                assert job["ready"] == 1
+                assert job["stage"] == "complete"
+                assert edge.playlist["Ids"] == ["yt-1"]
+
+
 async def test_a_ready_track_loses_its_review_label(
         config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

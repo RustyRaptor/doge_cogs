@@ -694,6 +694,288 @@ async def test_match_cancelled_album_choice_changes_nothing(
         assert edge.searches == []
 
 
+async def test_status_offers_youtube_or_ignoring_a_missing_artist(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch naming a dead end without the two ways out of it."""
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        cog.background()
+        await cog.config.pending_jobs.set(
+                {
+                        "1:playlist:mine": {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "Own mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "resolved": True,
+                                                "review": (
+                                                        "Artist not in "
+                                                        "MusicBrainz"
+                                                ),
+                                        }
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_status.callback(cog, ctx)
+        text = ctx.texts[0]
+        assert "Artist not in MusicBrainz (1)" in text
+        assert "importplaylist youtube" in text
+        assert "importplaylist ignore" in text
+        assert text.endswith("to try reviewed songs again.")
+
+
+async def test_ignore_skips_the_song_and_retry_leaves_it_alone(
+        playlist_command: CommandCase,
+) -> None:
+        """Catch a skipped song coming back on every retry."""
+        cog, ctx, edge, _channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "username": "doge",
+                                "user_id": "user-1",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "resolved": True,
+                                                "review": (
+                                                        "Artist not in "
+                                                        "MusicBrainz"
+                                                ),
+                                        }
+                                ],
+                        }
+                }
+        )
+        await Watch.playlist_ignore.callback(cog, ctx, song="Halo")
+        await asyncio.gather(*cog._pollers)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["skipped"] is True
+        assert "review" not in job["tracks"][0]
+        assert any("skip" in text.lower() for text in ctx.texts)
+        edge.lookup_available = True
+        await Watch.playlist_retry.callback(cog, ctx, target="My mix")
+        await asyncio.gather(*cog._pollers)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["skipped"] is True
+        assert edge.albums == []
+        assert any("no songs" in text.lower() for text in ctx.texts)
+
+
+async def test_youtube_download_joins_the_playlist(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch a fetched song that never reaches the playlist."""
+        import watch.jobs as job_module
+
+        cog, ctx, edge, channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        jellyfin_path = (
+                "/mnt/MediaDisk/Music/YouTube Imports/Depeche Mode/Halo.opus"
+        )
+        edge.path_items = {jellyfin_path: "yt-1"}
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "username": "doge",
+                                "channel": 10,
+                                "user_id": "user-1",
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "partial": False,
+                                "tracks": [
+                                        {
+                                                "id": "6kwEU2hLQpMToj1PHsBrOE",
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "duration": 270186,
+                                                "resolved": True,
+                                                "review": (
+                                                        "Artist not in "
+                                                        "MusicBrainz"
+                                                ),
+                                        }
+                                ],
+                        }
+                }
+        )
+        monkeypatch.setenv("PLAYLIST_YOUTUBE_DIR", "/yt")
+        monkeypatch.setenv(
+                "PLAYLIST_YOUTUBE_JELLYFIN_DIR",
+                "/mnt/MediaDisk/Music/YouTube Imports",
+        )
+
+        class FakeYoutube:
+                def __init__(self, *_args: object, **_kwargs: object) -> None:
+                        pass
+
+                async def ready(self) -> str | None:
+                        return None
+
+                async def download(
+                        self, _url: str, _artist: str, _title: str
+                ) -> object:
+                        from pathlib import Path
+
+                        return Path("/yt/Depeche Mode/Halo.opus")
+
+        monkeypatch.setattr(job_module, "Youtube", FakeYoutube)
+        await Watch.playlist_youtube.callback(
+                cog,
+                ctx,
+                song="Halo https://youtu.be/dQw4w9WgXcQ",
+        )
+        results = await asyncio.gather(*cog._pollers, return_exceptions=True)
+        assert all(result is None for result in results)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["item_id"] == "yt-1"
+        assert "review" not in job["tracks"][0]
+        assert job["stage"] == "complete"
+        assert edge.scans == [jellyfin_path]
+        assert edge.playlist["Ids"] == ["yt-1"]
+        assert any("Halo" in text for text, _ in channel.sent)
+
+
+async def test_youtube_leaves_review_alone_when_not_deployed(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch skipping a song forever because yt-dlp is missing."""
+        import watch.jobs as job_module
+
+        cog, ctx, _edge, _channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "username": "doge",
+                                "user_id": "user-1",
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "resolved": True,
+                                                "review": (
+                                                        "Artist not in "
+                                                        "MusicBrainz"
+                                                ),
+                                        }
+                                ],
+                        }
+                }
+        )
+
+        class MissingYoutube:
+                def __init__(self, *_args: object, **_kwargs: object) -> None:
+                        pass
+
+                async def ready(self) -> str | None:
+                        return "yt-dlp is not installed"
+
+        monkeypatch.setattr(job_module, "Youtube", MissingYoutube)
+        await Watch.playlist_youtube.callback(
+                cog,
+                ctx,
+                song="Halo https://youtu.be/dQw4w9WgXcQ",
+        )
+        job = (await cog.config.pending_jobs())[key]
+        row = job["tracks"][0]
+        assert row["review"] == "Artist not in MusicBrainz"
+        assert "skipped" not in row
+        assert cog._pollers == set()
+        assert any("not available" in text for text in ctx.texts)
+
+
+async def test_a_failed_youtube_download_is_skipped_for_good(
+        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+        """Catch retrying a video the downloader cannot fetch."""
+        import watch.jobs as job_module
+        from watch.youtube import YoutubeError
+
+        cog, ctx, edge, channel, _bot = playlist_command
+        key = "1:playlist:7kRUsOsraSiY4fyDcu7Bnb"
+        await cog.config.pending_jobs.set(
+                {
+                        key: {
+                                "owner": 1,
+                                "username": "doge",
+                                "channel": 10,
+                                "user_id": "user-1",
+                                "kind": "playlist",
+                                "name": "My mix",
+                                "stage": "attention",
+                                "ready": 0,
+                                "notified": True,
+                                "tracks": [
+                                        {
+                                                "title": "Halo",
+                                                "artist": "Depeche Mode",
+                                                "resolved": True,
+                                                "review": (
+                                                        "Artist not in "
+                                                        "MusicBrainz"
+                                                ),
+                                        }
+                                ],
+                        }
+                }
+        )
+
+        class BrokenYoutube:
+                def __init__(self, *_args: object, **_kwargs: object) -> None:
+                        pass
+
+                async def ready(self) -> str | None:
+                        return None
+
+                async def download(
+                        self, _url: str, _artist: str, _title: str
+                ) -> object:
+                        message = "ERROR: Video unavailable"
+                        raise YoutubeError(message)
+
+        monkeypatch.setattr(job_module, "Youtube", BrokenYoutube)
+        await Watch.playlist_youtube.callback(
+                cog,
+                ctx,
+                song="Halo https://youtu.be/dQw4w9WgXcQ",
+        )
+        await asyncio.gather(*cog._pollers)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["skipped"] is True
+        assert job["tracks"][0]["review"] == "YouTube download failed"
+        assert edge.playlist == {}
+        assert len(channel.sent) == 1
+        await Watch.playlist_retry.callback(cog, ctx, target="My mix")
+        await asyncio.gather(*cog._pollers)
+        job = (await cog.config.pending_jobs())[key]
+        assert job["tracks"][0]["skipped"] is True
+
+
 async def test_retry_only_touches_the_callers_imports(
         playlist_command: CommandCase,
 ) -> None:

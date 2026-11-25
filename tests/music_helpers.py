@@ -5,6 +5,7 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -26,6 +27,9 @@ class MusicEdge:
         creations: int = 0
         after_lookup: Any = None
         lookup_available: bool = True
+        artist_missing: bool = False
+        path_items: dict[str, str] = field(default_factory=dict)
+        scans: list[str] = field(default_factory=list)
 
         async def http(self, request: web.Request) -> web.Response:
                 """Use the actual API routes and JSON casing."""
@@ -38,8 +42,29 @@ class MusicEdge:
                         != 'MediaBrowser Token="test-key"'
                 ):
                         return web.Response(status=401)
+                if request.path == "/Library/Media/Updated":
+                        body = await request.json()
+                        self.scans.extend(
+                                update["Path"]
+                                for update in body.get("Updates", [])
+                        )
+                        return web.Response(status=204)
                 if request.path == "/Items":
                         title = request.query.get("searchTerm", "")
+                        if request.query.get("fields") == "Path":
+                                items = [
+                                        {"Id": item_id, "Path": path}
+                                        for path, item_id in (
+                                                self.path_items.items()
+                                        )
+                                        if Path(path).stem == title
+                                ]
+                                return web.json_response(
+                                        {
+                                                "Items": items,
+                                                "TotalRecordCount": len(items),
+                                        }
+                                )
                         items = (
                                 [
                                         {
@@ -68,6 +93,17 @@ class MusicEdge:
                 """Persist albums and targeted searches."""
                 path = request.path.removeprefix("/api/v1/")
                 body = await request.json() if request.can_read_body else {}
+                if path == "artist/lookup":
+                        if self.artist_missing:
+                                return web.json_response([])
+                        return web.json_response(
+                                [
+                                        {
+                                                "artistName": "Depeche Mode",
+                                                "foreignArtistId": "mb-artist",
+                                        }
+                                ]
+                        )
                 if path == "album/lookup":
                         if self.after_lookup:
                                 await self.after_lookup()

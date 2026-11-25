@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
@@ -18,6 +19,7 @@ from .music import MusicImporter
 from .notify import completion_ping
 from .spec import is_finished
 from .spotify import SpotifyPublic
+from .youtube import Youtube, YoutubeError
 
 if TYPE_CHECKING:
         from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -217,6 +219,112 @@ class Jobs:
                         await engine.prepare(job)
                         await engine.refresh(job)
 
+        def youtube(self) -> Youtube:
+                """Build the yt-dlp downloader from the deployment settings."""
+                return Youtube(
+                        binary=os.environ.get("PLAYLIST_YTDLP", "yt-dlp"),
+                        folder=os.environ.get(
+                                "PLAYLIST_YOUTUBE_DIR",
+                                "/music/YouTube Imports",
+                        ),
+                )
+
+        @staticmethod
+        def jellyfin_path(path: str) -> str:
+                """Translate the bot path into the path Jellyfin indexes."""
+                source = os.environ.get(
+                        "PLAYLIST_YOUTUBE_DIR", "/music/YouTube Imports"
+                ).rstrip("/")
+                target = os.environ.get(
+                        "PLAYLIST_YOUTUBE_JELLYFIN_DIR", source
+                ).rstrip("/")
+                text = str(path)
+                if source and text.startswith(source):
+                        return target + text[len(source) :]
+                return text
+
+        async def fetch_youtube(self, key: str, index: int, url: str) -> None:
+                """Download one reviewed song from YouTube and attach it."""
+                job = (await self.config.pending_jobs()).get(key)
+                if not job or not 0 <= index < len(job.get("tracks", [])):
+                        return
+                row = job["tracks"][index]
+                title = discord.utils.escape_markdown(
+                        str(row.get("title", "song"))
+                )
+                try:
+                        async with self._importer(key, job) as engine:
+                                path = await self.youtube().download(
+                                        url,
+                                        str(row.get("artist", "Unknown")),
+                                        str(row.get("title", "song")),
+                                )
+                                target = self.jellyfin_path(str(path))
+                                await engine.jellyfin.scan([target])
+                                row.update(
+                                        youtube_path=target,
+                                        youtube_url=url,
+                                        resolved=False,
+                                )
+                                for field in ("review", "attempts", "skipped"):
+                                        row.pop(field, None)
+                                job["stage"] = "waiting"
+                                job["notified"] = False
+                                job.pop("finished", None)
+                                job["created"] = datetime.now(UTC).timestamp()
+                                await self.save(key, job)
+                                await self.run_once(key)
+                except PermissionError:
+                        job["stage"] = "cancelled"
+                        await self.save(key, job)
+                        return
+                except YoutubeError as exc:
+                        row.update(
+                                resolved=True,
+                                skipped=True,
+                                review="YouTube download failed",
+                        )
+                        job["stage"] = "waiting"
+                        job["notified"] = False
+                        job.pop("finished", None)
+                        await self.save(key, job)
+                        await completion_ping(
+                                self.cog.bot,
+                                job.get("channel", 0),
+                                job["owner"],
+                                f"Couldn't fetch **{title}** from YouTube "
+                                f"({exc}). I skipped it for good.",
+                        )
+                        return
+                await completion_ping(
+                        self.cog.bot,
+                        job.get("channel", 0),
+                        job["owner"],
+                        f"Fetched **{title}** from YouTube. It joins the "
+                        "playlist once Jellyfin indexes it.",
+                )
+
+        async def skip(self, key: str, index: int) -> str:
+                """Leave one reviewed song out of an import permanently."""
+                job = (await self.config.pending_jobs()).get(key)
+                if not job:
+                        msg = "That playlist import no longer exists."
+                        raise PreloadError(msg)
+                if job.get("mutation"):
+                        msg = "An earlier write needs owner verification."
+                        raise PreloadError(msg)
+                if not 0 <= index < len(job.get("tracks", [])):
+                        msg = "That reviewed song is no longer in the import."
+                        raise PreloadError(msg)
+                row = job["tracks"][index]
+                async with self._importer(key, job) as engine:
+                        await engine.skip(job, row)
+                job["notified"] = False
+                job.pop("finished", None)
+                job["created"] = datetime.now(UTC).timestamp()
+                await self.save(key, job)
+                return str(row.get("title", "song"))
+
         async def assign_album(
                 self, key: str, index: int, match: dict[str, Any]
         ) -> str:
@@ -377,7 +485,7 @@ class Jobs:
                                 return
                         if await completion_ping(
                                 self.cog.bot,
-                                job["channel"],
+                                job.get("channel", 0),
                                 job["owner"],
                                 self.message(job),
                                 send=send,

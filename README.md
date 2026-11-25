@@ -352,17 +352,38 @@ song is actually available there. Title, credited artist and duration must
 match uniquely. Unresolved tracks produce a **finished with gaps** result,
 not an all-added message.
 
-Songs that cannot be matched become **review** tracks with a reason: no unique
-artist/album match, unavailable public album metadata, an unavailable source
-track, or a catalogue lookup that failed three times. A single failing lookup
-no longer stalls every later song in the import. `importplaylist status` groups
-reviewed songs by reason, and `importplaylist retry [playlist name]` looks up
-reviewed or unresolved songs again without disturbing matched albums; if the
-catalogue or Lidarr has caught up since, the import finishes and pings normally.
+Songs that cannot be matched become **review** tracks with a reason: **artist
+not in MusicBrainz**, no unique artist/album match, unavailable public album
+metadata, an unavailable source track, or a catalogue lookup that failed three
+times. An artist absent from MusicBrainz is reported separately because no
+album lookup can ever succeed for it. Album choices are restricted to albums
+credited to the Spotify artist, so a tribute, cover or same-titled release by
+another artist is never monitored. A single failing lookup no longer stalls
+every later song in the import. `importplaylist status` groups reviewed songs by
+reason, and `importplaylist retry [playlist name]` looks up reviewed or
+unresolved songs again without disturbing matched albums; if the catalogue or
+Lidarr has caught up since, the import finishes and pings normally.
 `importplaylist match <song>` searches Lidarr by title and artist and lets the
 requester pick the album from a select menu; it monitors an existing album or
 adds the missing one, submits a targeted `AlbumSearch`, and the playlist fills
-when the album downloads. Both commands only see the caller's own imports.
+when the album downloads. All of these commands only see the caller's own
+imports.
+
+For a song MusicBrainz does not have, `importplaylist youtube <song>` searches
+YouTube with `yt-dlp` and offers up to five videos, and
+`importplaylist youtube <song> <url>` uses a link the requester supplies. The
+audio is downloaded into the configured music folder, Jellyfin is asked to
+index it, and the exact new item joins the playlist once it appears. A download
+that fails is reported and **skipped for good**: it is not retried and no longer
+counts as review. `importplaylist ignore <song>` skips any reviewed song the
+same way, without downloading anything.
+
+`yt-dlp` needs ffmpeg and a writable view of the music library. Set
+`PLAYLIST_YTDLP` (binary, default `yt-dlp`), `PLAYLIST_YOUTUBE_DIR` (the folder
+the bot writes, default `/music/YouTube Imports`) and
+`PLAYLIST_YOUTUBE_JELLYFIN_DIR` (the same folder as Jellyfin indexes it, default
+identical). Only YouTube links are accepted, output is confined to that folder,
+and downloads never run through a shell.
 
 A write whose acknowledgement is uncertain stops for owner verification,
 avoiding blindly repeated creates/searches. Seven-day unresolved jobs report

@@ -53,6 +53,7 @@ from .spec import (
         split_query,
 )
 from .spotify import SpotifyPublic, playlist_id
+from .youtube import YoutubeError, youtube_url
 
 log = logging.getLogger("red.doge_cogs.watch")
 
@@ -102,6 +103,17 @@ def album_choice_label(album: dict[str, Any]) -> str:
         year = released[:4] or "?"
         artist = album.get("artist", {}).get("artistName", "?")
         label = f"{album.get('title', 'Album')} ({year}) · {artist}"
+        return discord.utils.escape_markdown(label)[:100]
+
+
+def video_label(video: dict[str, Any]) -> str:
+        """Name a YouTube candidate with its channel and duration."""
+        seconds = int(video.get("duration") or 0)
+        length = f"{seconds // 60}:{seconds % 60:02d}" if seconds else "?"
+        label = (
+                f"{video.get('title', 'Untitled')} · "
+                f"{video.get('uploader', 'unknown')} · {length}"
+        )
         return discord.utils.escape_markdown(label)[:100]
 
 
@@ -1475,6 +1487,7 @@ class Watch(commands.Cog):
                         return
                 lines = []
                 needs_retry = False
+                missing = False
                 for job in own[-5:]:
                         name = discord.utils.escape_markdown(job["name"])
                         ready = job.get("ready", 0)
@@ -1483,8 +1496,20 @@ class Watch(commands.Cog):
                                 f"**{name}** · {job['stage']} · "
                                 f"{ready}/{count} songs ready"
                         )
-                        reviewed = [r for r in job["tracks"] if r.get("review")]
+                        reviewed = [
+                                r
+                                for r in job["tracks"]
+                                if r.get("review") and not r.get("skipped")
+                        ]
+                        skipped = sum(
+                                1 for r in job["tracks"] if r.get("skipped")
+                        )
                         lines.extend(review_summary(reviewed))
+                        if skipped:
+                                lines.append(
+                                        f"{skipped} song(s) skipped at your "
+                                        "request."
+                                )
                         if job.get("mutation"):
                                 lines.append(
                                         "An earlier write needs owner "
@@ -1492,12 +1517,25 @@ class Watch(commands.Cog):
                                 )
                         if reviewed:
                                 needs_retry = True
-                hint = (
-                        f"Use `{ctx.clean_prefix}importplaylist "
-                        "retry <name>` to try reviewed songs again."
-                        if needs_retry
-                        else ""
-                )
+                                missing = any(
+                                        r.get("review") == "Artist not in "
+                                        "MusicBrainz"
+                                        for r in reviewed
+                                )
+                prefix = ctx.clean_prefix
+                hints = []
+                if needs_retry and missing:
+                        hints.append(
+                                f"For artists MusicBrainz lacks, use "
+                                f"`{prefix}importplaylist youtube <song>` or "
+                                f"`{prefix}importplaylist ignore <song>`."
+                        )
+                if needs_retry:
+                        hints.append(
+                                f"Use `{prefix}importplaylist retry <name>` "
+                                "to try reviewed songs again."
+                        )
+                hint = "\n".join(hints)
                 body = "\n".join(lines)
                 if hint:
                         body = body[: 1900 - len(hint) - 1]
@@ -1525,7 +1563,11 @@ class Watch(commands.Cog):
                                         f"{track.get('title', '')} "
                                         f"{track.get('artist', '')}"
                                 ).casefold()
-                                if track.get("review") and query in haystack:
+                                if (
+                                        track.get("review")
+                                        and not track.get("skipped")
+                                        and query in haystack
+                                ):
                                         found.append((key, index, job, track))
                 return found
 
@@ -1536,6 +1578,65 @@ class Watch(commands.Cog):
                 artist = track.get("artist", "?")
                 name = job.get("name", "playlist")
                 return f"{title} · {artist} · {name}"
+
+        async def _reviewed_choice(
+                self, ctx: commands.Context, query: str
+        ) -> tuple[str, int, dict[str, Any], dict[str, Any]] | None:
+                """Choose one of the caller's reviewed songs by ``query``."""
+                found = self._reviewed_tracks(
+                        ctx.author.id,
+                        query,
+                        await self.config.pending_jobs(),
+                )
+                if not found:
+                        await ctx.send(f"No reviewed song matches `{query}`.")
+                        return None
+                if len(found) == 1:
+                        return found[0]
+                pick = await self._download_choice(
+                        ctx,
+                        f"{len(found)} reviewed songs match:",
+                        [
+                                (str(i), self._review_label(job, track))
+                                for i, (_key, _index, job, track) in (
+                                        enumerate(found[:24])
+                                )
+                        ],
+                )
+                return None if pick is None else found[int(pick)]
+
+        async def _youtube_choice(
+                self, ctx: commands.Context, jobs: Jobs, track: dict[str, Any]
+        ) -> str | None:
+                """Let the requester choose from matching YouTube videos."""
+                title = discord.utils.escape_markdown(
+                        str(track.get("title", "song"))
+                )
+                try:
+                        results = await jobs.youtube().search(
+                                f"{track.get('title', '')} "
+                                f"{track.get('artist', '')}".strip()
+                        )
+                except YoutubeError as exc:
+                        await ctx.send(f"YouTube search failed: {exc}")
+                        return None
+                if not results:
+                        await ctx.send(
+                                f"YouTube found no video for **{title}**. "
+                                f"Paste a link with "
+                                f"`{ctx.clean_prefix}importplaylist youtube "
+                                f"{title} <url>`.",
+                                allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        return None
+                return await self._download_choice(
+                        ctx,
+                        f"Which video is **{title}**?",
+                        [
+                                (str(video["url"]), video_label(video))
+                                for video in results
+                        ],
+                )
 
         async def _lidarr_album(
                 self, ctx: commands.Context, track: dict[str, Any]
@@ -1604,34 +1705,9 @@ class Watch(commands.Cog):
                         )
                         return
                 jobs = self.background()
-                found = self._reviewed_tracks(
-                        ctx.author.id,
-                        query,
-                        await self.config.pending_jobs(),
-                )
-                if not found:
-                        await ctx.send(
-                                f"No reviewed song matches `{song.strip()}`."
-                        )
+                choice = await self._reviewed_choice(ctx, query)
+                if choice is None:
                         return
-                choice = found[0]
-                if len(found) > 1:
-                        pick = await self._download_choice(
-                                ctx,
-                                f"{len(found)} reviewed songs match:",
-                                [
-                                        (
-                                                str(i),
-                                                self._review_label(job, track),
-                                        )
-                                        for i, (_key, _index, job, track) in (
-                                                enumerate(found[:24])
-                                        )
-                                ],
-                        )
-                        if pick is None:
-                                return
-                        choice = found[int(pick)]
                 key, index, job, track = choice
                 if job.get("mutation"):
                         await ctx.send(
@@ -1664,6 +1740,100 @@ class Watch(commands.Cog):
                 )
                 self._spawn(jobs.run_once(key))
 
+        @playlist.command(name="youtube")
+        async def playlist_youtube(
+                self, ctx: commands.Context, *, song: str = ""
+        ) -> None:
+                """Fetch a reviewed song from YouTube (or a link you paste)."""
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is required; ask "
+                                "the owner to use `request allow`."
+                        )
+                        return
+                url = youtube_url(song)
+                query = song.replace(url, " ") if url else song
+                query = query.strip().casefold()
+                if len(query) < 2:  # noqa: PLR2004 (a useful search)
+                        await ctx.send(
+                                f"Use `{ctx.clean_prefix}importplaylist "
+                                "youtube <song>` (`youtube <song> <link>` to "
+                                "choose the video yourself)."
+                        )
+                        return
+                jobs = self.background()
+                choice = await self._reviewed_choice(ctx, query)
+                if choice is None:
+                        return
+                key, index, job, track = choice
+                if job.get("mutation"):
+                        await ctx.send(
+                                "An earlier write needs owner verification "
+                                "before fetching. Use `importplaylist verify`."
+                        )
+                        return
+                if key in jobs.active:
+                        await ctx.send(
+                                "That import is still being checked; try "
+                                "again in a minute."
+                        )
+                        return
+                title = discord.utils.escape_markdown(
+                        str(track.get("title", "song"))
+                )
+                problem = await jobs.youtube().ready()
+                if problem is not None:
+                        await ctx.send(
+                                "The YouTube fallback is not available: "
+                                f"{problem}. The song stays in review."
+                        )
+                        return
+                if url is None:
+                        picked = await self._youtube_choice(ctx, jobs, track)
+                        if picked is None:
+                                return
+                        url = picked
+                await ctx.send(
+                        f"Downloading **{title}** from YouTube...",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                self._spawn(jobs.fetch_youtube(key, index, url))
+
+        @playlist.command(name="ignore")
+        async def playlist_ignore(
+                self, ctx: commands.Context, *, song: str = ""
+        ) -> None:
+                """Skip a reviewed song permanently, without retrying it."""
+                if not await self.can_download(ctx.author):
+                        await ctx.send(
+                                "Download permission is required; ask "
+                                "the owner to use `request allow`."
+                        )
+                        return
+                query = song.strip().casefold()
+                if len(query) < 2:  # noqa: PLR2004 (a useful search)
+                        await ctx.send(
+                                f"Use `{ctx.clean_prefix}importplaylist "
+                                "ignore <song>`."
+                        )
+                        return
+                jobs = self.background()
+                choice = await self._reviewed_choice(ctx, query)
+                if choice is None:
+                        return
+                key, index, _job, track = choice
+                try:
+                        name = await jobs.skip(key, index)
+                except (PreloadError, PermissionError) as exc:
+                        await ctx.send(f"Couldn't skip that song: {exc}")
+                        return
+                await ctx.send(
+                        f"Skipped **{discord.utils.escape_markdown(name)}**; "
+                        "it won't be retried or counted again.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                )
+                self._spawn(jobs.run_once(key))
+
         @playlist.command(name="retry")
         async def playlist_retry(
                 self, ctx: commands.Context, *, target: str = ""
@@ -1690,8 +1860,11 @@ class Watch(commands.Cog):
                                 if job.get("owner") == ctx.author.id
                                 and job.get("kind") == "playlist"
                                 and any(
-                                        not track.get("resolved")
-                                        or track.get("review")
+                                        (
+                                                not track.get("resolved")
+                                                or track.get("review")
+                                        )
+                                        and not track.get("skipped")
                                         for track in job.get("tracks", [])
                                 )
                                 and (
@@ -1736,8 +1909,13 @@ class Watch(commands.Cog):
                                         rows = [
                                                 track
                                                 for track in job["tracks"]
-                                                if not track.get("resolved")
-                                                or track.get("review")
+                                                if (
+                                                        not track.get(
+                                                                "resolved"
+                                                        )
+                                                        or track.get("review")
+                                                )
+                                                and not track.get("skipped")
                                         ]
                                         for row in rows:
                                                 for field in (

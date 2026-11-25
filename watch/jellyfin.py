@@ -113,6 +113,46 @@ class Jellyfin:
                         body={"Ids": ids},
                 )
 
+        async def scan(self, paths: list[str]) -> None:
+                """Ask Jellyfin to index newly written files."""
+                await self.call(
+                        "Library/Media/Updated",
+                        method="POST",
+                        body={
+                                "Updates": [
+                                        {
+                                                "Path": path,
+                                                "UpdateType": "Created",
+                                        }
+                                        for path in paths
+                                ]
+                        },
+                )
+
+        async def audio_at(self, path: str, user_id: str) -> str | None:
+                """Resolve the indexed item for one exact downloaded file."""
+                filename = path.replace("\\", "/").rsplit("/", 1)[-1]
+                stem = filename.rsplit(".", 1)[0]
+                result = await self.call(
+                        "Items",
+                        params={
+                                "userId": user_id,
+                                "includeItemTypes": "Audio",
+                                "recursive": "true",
+                                "searchTerm": stem,
+                                "fields": "Path",
+                                "limit": "100",
+                        },
+                )
+                matches = [
+                        item
+                        for item in result.get("Items", [])
+                        if str(item.get("Path", ""))
+                        .replace("\\", "/")
+                        .endswith("/" + filename)
+                ]
+                return str(matches[0]["Id"]) if len(matches) == 1 else None
+
         async def audio(
                 self, track: dict[str, Any], user_id: str
         ) -> str | None:
