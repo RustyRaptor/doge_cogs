@@ -176,6 +176,10 @@ class Youtube:
                                 "--audio-quality",
                                 "0",
                                 "--no-progress",
+                                # The JS challenge solver ships outside the
+                                # package; fetch its current release.
+                                "--remote-components",
+                                "ejs:github",
                                 "--print",
                                 "after_move:filepath",
                                 "--output",

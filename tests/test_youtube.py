@@ -102,6 +102,7 @@ async def test_download_writes_inside_the_music_folder(tmp_path: Path) -> None:
         )
         assert path == target
         assert "--no-playlist" in seen[0]
+        assert "--remote-components" in seen[0]
         assert str(tmp_path) in str(path)
 
 
