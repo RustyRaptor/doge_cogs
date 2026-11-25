@@ -380,9 +380,9 @@ same way, without downloading anything.
 
 `yt-dlp` needs ffmpeg and a writable view of the music library. Set
 `PLAYLIST_YTDLP` (binary, default `yt-dlp`), `PLAYLIST_YOUTUBE_DIR` (the folder
-the bot writes, default `/music/YouTube Imports`) and
-`PLAYLIST_YOUTUBE_JELLYFIN_DIR` (the same folder as Jellyfin indexes it, default
-identical). Only YouTube links are accepted, output is confined to that folder,
+the bot writes, default `/music/YouTube`) and `PLAYLIST_YOUTUBE_JELLYFIN_DIR`
+(the same folder as Jellyfin indexes it, default identical; the deployment uses
+`/arrmedia/Music/YouTube`). Only YouTube links are accepted, output is confined to that folder,
 and downloads never run through a shell.
 
 A write whose acknowledgement is uncertain stops for owner verification,
