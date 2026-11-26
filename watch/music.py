@@ -106,6 +106,39 @@ def release_rank(album: dict[str, Any]) -> tuple[int, int]:
         return (order, derivative)
 
 
+# The catalog fallback costs one lookup per candidate, so it stops after the
+# few best-ranked release groups. More than that is a catalogue problem, not a
+# missing album, and the requester reviews it instead.
+MAX_RELEASE_GROUP_LOOKUPS = 3
+
+
+def matching_albums(
+        source: dict[str, str], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+        """Keep the release groups titled for this track by its artist."""
+        return [
+                a
+                for a in candidates
+                if appears_on(source["artist"], a)
+                and album_title(a["title"]) == album_title(source["title"])
+        ]
+
+
+def sole_album(
+        source: dict[str, str], candidates: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+        """Return the only release group the catalog offers, if any.
+
+        One candidate leaves nothing to tie-break, so the caller can skip the
+        MusicBrainz lookup entirely and save its one-second spacing.
+        """
+        unique = {
+                a["foreignAlbumId"]: a
+                for a in matching_albums(source, candidates)
+        }
+        return next(iter(unique.values())) if len(unique) == 1 else None
+
+
 def choose_album(
         source: dict[str, str],
         candidates: list[dict[str, Any]],
@@ -119,12 +152,7 @@ def choose_album(
         edition. A tie between equally good candidates stays ambiguous so the
         requester chooses.
         """
-        matches = [
-                a
-                for a in candidates
-                if appears_on(source["artist"], a)
-                and album_title(a["title"]) == album_title(source["title"])
-        ]
+        matches = matching_albums(source, candidates)
         if holding:
                 # A release group MusicBrainz says holds the track beats
                 # one that only outranks it on type.
@@ -257,7 +285,9 @@ class MusicImporter:
                 self, groups: list[dict[str, Any]]
         ) -> dict[str, Any] | None:
                 """Find the release group MusicBrainz named in the catalog."""
-                for group in sorted(groups, key=release_rank):
+                for group in sorted(groups, key=release_rank)[
+                        :MAX_RELEASE_GROUP_LOOKUPS
+                ]:
                         found = await self.arr(
                                 "album",
                                 params={
@@ -280,13 +310,15 @@ class MusicImporter:
                 candidates = await self.arr(
                         "album/lookup", params={"term": source["title"]}
                 )
-                groups = await self._groups(
-                        source["artist"], track_title or source["title"]
-                )
-                holding = {g["foreignAlbumId"] for g in groups}
-                match = choose_album(source, candidates or [], holding)
-                if match is None and groups:
-                        match = await self._catalog_album(groups)
+                match = sole_album(source, candidates or [])
+                if match is None:
+                        groups = await self._groups(
+                                source["artist"], track_title or source["title"]
+                        )
+                        holding = {g["foreignAlbumId"] for g in groups}
+                        match = choose_album(source, candidates or [], holding)
+                        if match is None and groups:
+                                match = await self._catalog_album(groups)
                 if match is not None:
                         return await self._ensure_album(job, match), ""
                 if not await self._artist_known(job, source["artist"]):

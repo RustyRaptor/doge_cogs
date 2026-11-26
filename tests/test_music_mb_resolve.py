@@ -27,14 +27,18 @@ def album_row(
 
 
 def group_row(
-        mbid: str, title: str, kind: str, tracks: list[str]
+        mbid: str,
+        title: str,
+        kind: str,
+        tracks: list[str],
+        secondary: list[str] | None = None,
 ) -> dict[str, Any]:
         """Build a MusicBrainz release group as the client returns it."""
         return {
                 "foreignAlbumId": mbid,
                 "title": title,
                 "albumType": kind,
-                "secondaryTypes": [],
+                "secondaryTypes": secondary or [],
                 "releaseDate": "2013-06-25",
                 "artist": {"artistName": "Avicii"},
                 "tracks": tracks,
@@ -76,6 +80,7 @@ class FakeArr:
                 self.catalog = catalog or {}
                 self.added: list[dict[str, Any]] = []
                 self.searches: list[list[int]] = []
+                self.lookups: list[str] = []
 
         async def __call__(self, path: str, **kwargs: Any) -> Any:  # noqa: ANN401
                 """Serve the handful of routes the importer uses."""
@@ -86,6 +91,7 @@ class FakeArr:
                         return self.lookup
                 if path == "album" and method == "GET":
                         mbid = params.get("foreignAlbumId")
+                        self.lookups.append(str(mbid))
                         row = self.catalog.get(mbid) if mbid else None
                         return [row] if row else []
                 if path == "album" and method == "POST":
@@ -211,6 +217,58 @@ async def test_a_dead_end_is_resolved_from_the_catalog_by_mbid() -> None:
 
         assert reason == ""
         assert album_id == 3
+
+
+async def test_one_catalog_candidate_needs_no_musicbrainz() -> None:
+        """One release group leaves nothing for MusicBrainz to tie-break."""
+        arr = FakeArr([album_row(1, "True", "Album", "rg-true")])
+        brainz = FakeBrainz([])
+        engine = await engine_with(arr, brainz)
+
+        album_id, reason = await engine._album(
+                {"artist_checks": {}},
+                {"title": "True", "artist": "Avicii"},
+        )
+
+        assert reason == ""
+        assert album_id == 1
+        assert brainz.asked == []
+
+
+async def test_the_catalog_fallback_stops_after_the_ranked_cap() -> None:
+        """Never query the catalog once per MusicBrainz group."""
+        arr = FakeArr([])
+        brainz = FakeBrainz(
+                [
+                        group_row("rg-single", "Levels", "Single", ["Levels"]),
+                        group_row("rg-ep", "Levels", "EP", ["Levels"]),
+                        group_row("rg-album", "Levels", "Album", ["Levels"]),
+                        group_row(
+                                "rg-comp",
+                                "Levels",
+                                "Album",
+                                ["Levels"],
+                                ["Compilation"],
+                        ),
+                        group_row(
+                                "rg-live",
+                                "Levels",
+                                "Album",
+                                ["Levels"],
+                                ["Live"],
+                        ),
+                ]
+        )
+        engine = await engine_with(arr, brainz)
+
+        album_id, reason = await engine._album(
+                {"artist_checks": {}},
+                {"title": "Levels", "artist": "Avicii"},
+        )
+
+        assert album_id is None
+        assert reason == "No unique artist/album match"
+        assert arr.lookups == ["rg-album", "rg-comp", "rg-live"]
 
 
 async def test_an_unreachable_musicbrainz_keeps_the_old_answer() -> None:
