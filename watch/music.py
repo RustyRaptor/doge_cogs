@@ -128,9 +128,7 @@ def choose_album(
         if holding:
                 # A release group MusicBrainz says holds the track beats
                 # one that only outranks it on type.
-                held = [
-                        a for a in matches if a["foreignAlbumId"] in holding
-                ]
+                held = [a for a in matches if a["foreignAlbumId"] in holding]
                 if held:
                         matches = held
         unique = {a["foreignAlbumId"]: a for a in matches}

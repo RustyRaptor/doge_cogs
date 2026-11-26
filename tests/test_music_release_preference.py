@@ -47,10 +47,14 @@ def test_an_ep_wins_over_a_single_but_not_over_an_album() -> None:
                 album(1, "Levels", "Single"),
                 album(2, "Levels", "EP"),
         ]
-        assert choose("Levels", candidates)["id"] == 2
+        selected = choose("Levels", candidates)
+        assert selected is not None
+        assert selected["id"] == 2
 
         candidates.append(album(3, "Levels", "Album"))
-        assert choose("Levels", candidates)["id"] == 3
+        selected = choose("Levels", candidates)
+        assert selected is not None
+        assert selected["id"] == 3
 
 
 def test_a_plain_album_wins_over_a_compilation_or_live_edition() -> None:
@@ -60,7 +64,9 @@ def test_a_plain_album_wins_over_a_compilation_or_live_edition() -> None:
                 album(2, "True", "Album", ["Live"]),
                 album(3, "True", "Album"),
         ]
-        assert choose("True", candidates)["id"] == 3
+        selected = choose("True", candidates)
+        assert selected is not None
+        assert selected["id"] == 3
 
 
 def test_a_single_wins_over_a_remix_edition() -> None:
@@ -69,7 +75,9 @@ def test_a_single_wins_over_a_remix_edition() -> None:
                 album(1, "Wake Me Up", "Single", ["Remix"]),
                 album(2, "Wake Me Up", "Single"),
         ]
-        assert choose("Wake Me Up", candidates)["id"] == 2
+        selected = choose("Wake Me Up", candidates)
+        assert selected is not None
+        assert selected["id"] == 2
 
 
 def test_equally_ranked_albums_stay_ambiguous() -> None:
@@ -110,4 +118,6 @@ def test_release_preference_never_overrides_the_artist_check() -> None:
                         "artist": {"artistName": "A Tribute Band"},
                 },
         ]
-        assert choose("True", candidates)["id"] == 1
+        selected = choose("True", candidates)
+        assert selected is not None
+        assert selected["id"] == 1

@@ -59,9 +59,7 @@ def parse_recordings(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         if credited and isinstance(credited[0], dict):
                                 name = credited[0].get("name") or ""
                         primary = meta.get("primary-type") or ""
-                        secondary = list(
-                                meta.get("secondary-types") or []
-                        )
+                        secondary = list(meta.get("secondary-types") or [])
                         row = groups.setdefault(
                                 group_id,
                                 {

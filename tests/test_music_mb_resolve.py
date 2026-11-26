@@ -1,6 +1,6 @@
 """MusicBrainz containment and resolution inside the album importer."""
 
-from typing import Any
+from typing import Any, cast
 
 
 def album_row(
@@ -80,7 +80,7 @@ class FakeArr:
         async def __call__(self, path: str, **kwargs: Any) -> Any:  # noqa: ANN401
                 """Serve the handful of routes the importer uses."""
                 params = kwargs.get("params") or {}
-                body = kwargs.get("body")
+                body = cast("dict[str, Any] | None", kwargs.get("body"))
                 method = kwargs.get("method") or ("POST" if body else "GET")
                 if path == "album/lookup":
                         return self.lookup
@@ -89,6 +89,7 @@ class FakeArr:
                         row = self.catalog.get(mbid) if mbid else None
                         return [row] if row else []
                 if path == "album" and method == "POST":
+                        assert body is not None
                         self.added.append(body)
                         row = dict(body)
                         row["id"] = row.get("id") or (900 + len(self.added))
@@ -115,6 +116,7 @@ class FakeArr:
                                 }
                         ]
                 if path == "command":
+                        assert body is not None
                         self.searches.append(body["albumIds"])
                         return {"id": 1}
                 return {}
@@ -132,8 +134,8 @@ async def engine_with(arr: FakeArr, brainz: Any | None) -> Any:  # noqa: ANN401
 
         return MusicImporter(
                 arr,
-                None,
-                None,
+                cast("Any", None),
+                cast("Any", None),
                 save,
                 authorize,
                 musicbrainz=brainz,

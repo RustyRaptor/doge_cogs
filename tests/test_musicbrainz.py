@@ -1,6 +1,6 @@
 """MusicBrainz resolves a track to the release groups that contain it."""
 
-from typing import Any
+from typing import Any, cast
 
 GROUP_SINGLE = {
         "id": "rg-single",
@@ -159,7 +159,7 @@ async def test_rate_limit_is_retried_then_succeeds() -> None:
         async def sleep(seconds: float) -> None:
                 delays.append(seconds)
 
-        mb = MusicBrainz(client, sleep=sleep, clock=lambda: 0.0)
+        mb = MusicBrainz(cast("Any", client), sleep=sleep, clock=lambda: 0.0)
         groups = await mb.release_groups("Avicii", "Wake Me Up")
         assert [g["foreignAlbumId"] for g in groups] == ["rg-single", "rg-comp"]
         assert len(client.calls) == 2
@@ -175,7 +175,7 @@ async def test_repeated_failure_degrades_to_no_groups() -> None:
         async def sleep(_seconds: float) -> None:
                 return None
 
-        mb = MusicBrainz(client, sleep=sleep, clock=lambda: 0.0)
+        mb = MusicBrainz(cast("Any", client), sleep=sleep, clock=lambda: 0.0)
         assert await mb.release_groups("Avicii", "Wake Me Up") == []
 
 
@@ -191,7 +191,9 @@ async def test_calls_are_spaced_by_one_second() -> None:
                 delays.append(seconds)
                 now["t"] += seconds
 
-        mb = MusicBrainz(client, sleep=sleep, clock=lambda: now["t"])
+        mb = MusicBrainz(
+                cast("Any", client), sleep=sleep, clock=lambda: now["t"]
+        )
         await mb.release_groups("Avicii", "Wake Me Up")
         await mb.release_groups("Avicii", "Hey Brother")
         assert delays == [1.0]
