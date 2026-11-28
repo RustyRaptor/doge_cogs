@@ -1639,15 +1639,22 @@ class Watch(commands.Cog):
                 )
 
         async def _lidarr_album(
-                self, ctx: commands.Context, track: dict[str, Any]
+                self,
+                ctx: commands.Context,
+                track: dict[str, Any],
+                album_query: str = "",
         ) -> dict[str, Any] | None:
                 """Ask the requester which Lidarr album a song belongs to."""
                 title = discord.utils.escape_markdown(
                         str(track.get("title", "song"))
                 )
                 term = (
-                        f"{track.get('title', '')} {track.get('artist', '')}"
-                ).strip()
+                        album_query
+                        or (
+                                f"{track.get('title', '')} "
+                                f"{track.get('artist', '')}"
+                        ).strip()
+                )
                 try:
                         candidates = await self._arr_call(
                                 "music", "album/lookup", params={"term": term}
@@ -1690,18 +1697,20 @@ class Watch(commands.Cog):
         async def playlist_match(
                 self, ctx: commands.Context, *, song: str = ""
         ) -> None:
-                """Choose the Lidarr album for a reviewed song."""
+                """Choose a Lidarr album with an optional album search term."""
                 if not await self.can_download(ctx.author):
                         await ctx.send(
                                 "Download permission is required; ask "
                                 "the owner to use `request allow`."
                         )
                         return
-                query = song.strip().casefold()
-                if len(query) < 2:  # noqa: PLR2004 (a useful search)
+                track_query, separator, album_query = song.partition(" | ")
+                query = track_query.strip().casefold()
+                album_query = album_query.strip()
+                if len(query) < 2 or (separator and not album_query):  # noqa: PLR2004
                         await ctx.send(
                                 f"Use `{ctx.clean_prefix}importplaylist "
-                                "match <song title>`."
+                                "match <song title> [ | <album and artist>]`."
                         )
                         return
                 jobs = self.background()
@@ -1721,7 +1730,7 @@ class Watch(commands.Cog):
                                 "again in a minute."
                         )
                         return
-                album = await self._lidarr_album(ctx, track)
+                album = await self._lidarr_album(ctx, track, album_query)
                 if album is None:
                         return
                 title = discord.utils.escape_markdown(

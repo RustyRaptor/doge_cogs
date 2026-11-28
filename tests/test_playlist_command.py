@@ -561,8 +561,18 @@ async def test_retry_recovers_review_tracks_end_to_end(
         assert "2/2" in channel.sent[-1][0]
 
 
+@pytest.mark.parametrize(
+        ("request_text", "lookup_term"),
+        [
+                ("Halo", "Halo Depeche Mode"),
+                ("Halo | Violator Depeche Mode", "Violator Depeche Mode"),
+        ],
+)
 async def test_match_assigns_the_chosen_album_end_to_end(
-        playlist_command: CommandCase, monkeypatch: pytest.MonkeyPatch
+        playlist_command: CommandCase,
+        monkeypatch: pytest.MonkeyPatch,
+        request_text: str,
+        lookup_term: str,
 ) -> None:
         """Catch an album choice that never reaches the import."""
         from datetime import UTC, datetime
@@ -605,8 +615,25 @@ async def test_match_assigns_the_chosen_album_end_to_end(
                 return "mb-album"
 
         monkeypatch.setattr(cog, "_download_choice", choose)
+        original_call = cog._arr_call
+
+        async def check_lookup(
+                kind: str,
+                path: str,
+                *,
+                body: dict[str, Any] | None = None,
+                params: dict[str, str] | None = None,
+                method: str | None = None,
+        ) -> object:
+                if (kind, path) == ("music", "album/lookup"):
+                        assert params == {"term": lookup_term}
+                return await original_call(
+                        kind, path, body=body, params=params, method=method
+                )
+
+        monkeypatch.setattr(cog, "_arr_call", check_lookup)
         edge.ready = set()
-        await Watch.playlist_match.callback(cog, ctx, song="Halo")
+        await Watch.playlist_match.callback(cog, ctx, song=request_text)
         await asyncio.gather(*cog._pollers)
         job = (await cog.config.pending_jobs())[key]
         assert job["tracks"][0]["album_id"] == 7
